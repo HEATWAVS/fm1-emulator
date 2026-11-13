@@ -58,7 +58,7 @@ harness: flashchip.mjs (options)  machine.mjs (boot: select before the first ins
 ```
 chipspec.mjs   datasheet data: profiles (puya, uc25hq80), timing, block-protect tables, BEHAVIORS registry + citations
 chipmodel.mjs  ChipModel: transact(tx, {read, partialBits}) -> {outcome, out, unknown}; readStatus(); peek(); powerCycle(); ManualClock
-chiptests.mjs  75 conformance tests (expected values typed from the datasheets, incl. all 64 chip-erase combinations per profile and both printed protection tables) + traceability check
+chiptests.mjs  87 conformance tests (expected values typed from the datasheets, incl. all 64 chip-erase combinations per profile and both printed protection tables) + traceability check
 ```
 - **Not connected to the running engine** (the chip-profile engine is a Rust port checked against it; see above). Pure JS; one chip-select transaction at a time; time from a caller-supplied clock; completion at start + typical (or maximum) duration.
 - Modelled: WREN/WRDI, RDSR (05h/35h, 16-bit status), WRSR, page program (wrap, last-256, AND), page/sector/32K/64K/chip erase, 9Fh, reads 03h/0Bh, BP/CMP/SRP protection, WEL/WIP rules, power cycle. Chip erase: Puya runs it when the table says nothing is protected (p.24, p.38); the UC25HQ80 refuses the 14 BP/CMP combinations where its p.9 and p.28 statements conflict. Everything else throws `NotModeled`; anything the datasheets leave open throws `UnspecifiedBehavior` or is flagged in the `unknown` mask (FLASH-CHIPS.md).

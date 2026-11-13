@@ -109,13 +109,36 @@ Other firmware compared (AURORA, Felucca, Melodee, coqui) never issues it. The i
 case of "a part that does not answer 0x4B: all FF or all 0" and then falls back to the Bluetooth address. The package in the catalog (1.0) is older than the source read, so this
 is the HAL's behaviour, not a statement about that exact binary.
 
-**Is it specified by the Stage A sources? No.** Stage A cites `4Bh` only in each datasheet's command listing (Puya p.20-21 "10.1 Commands listing", UC25HQ80 p.13 Table-7):
-the command exists on both chips, but the dedicated sections (dummy bytes, ID length) were not read, so nothing about its response is specified here. Decision D42: the model
-answers `FF` and counts it; it does not invent a unique ID. Consequences: (1) quadro-fm1 and similar firmware take the documented "no unique ID" path under a profile, so a
-profile run does **not** reproduce the WiFi MAC / BLE name that the original model's fake `FM1-` pattern (`46 4D 31 2D` repeated) produced; (2) to model `4Bh`, read the two
-datasheets' Read Unique ID sections first (a Stage A extension).
+**Was it specified by the Stage A sources? Not at the time.** Stage A cited `4Bh` only in the command listings, so the model refused it (D42). The 4Bh Stage A extension
+(next section) has since read both dedicated sections and added it to the **reference model**. The **Rust engine has not been changed**: it still answers `FF` and counts the
+command, and the original model's `FM1-` pattern remains the legacy profile's answer. Consequences for firmware under a profile: (1) quadro-fm1 and similar firmware take the
+documented "no unique ID" path, so a profile run does **not** reproduce the WiFi MAC / BLE name that the original model's fake `FM1-` pattern (`46 4D 31 2D` repeated) produced;
+(2) the engine port of the extended model is the next, unapproved step.
 
 **Attribution (Stage C4).** The 4Bh answer is the only chip behaviour that changes quadro-fm1's and fm1-field's flash content between legacy and the Puya profile: a throwaway scratch engine returning the original `FM1-` pattern for `4Bh` made both firmware's flash identical to legacy (fm1-field's three extra writes disappear). So under a profile these firmware take their no-unique-ID path (fm1-field then stores generated data). FF is **not** equivalent to the `FM1-` pattern.
+
+## Read Unique ID, 4Bh: the datasheet evidence (4Bh Stage A extension, 2026-11-13)
+
+Read in full from both datasheets' dedicated sections (Puya V1.7 p.54 "10.41 Read Unique ID (RUID)", command table p.21; UC25HQ80 v1.2 p.43-44 "9.38 Read Unique ID (RUID) (4BH)",
+Table-7 p.13), with the figures and tables rendered and read as images. Registry ids `ruid.*` in `chipspec.mjs`. Levels: **V** verified, **I** interpretation, **X** unspecified
+(the model refuses), **U** unknown value.
+
+| Question | Puya P25Q80H (V1.7) | UC25HQ80 (v1.2) | Level |
+|---|---|---|---|
+| Sequence | CS# low, `4Bh`, Dummy Byte1-4, 128-bit ID out, CS# high (p.54 text); Figure 10-42: command, "3 bytes dummy", one more dummy byte, ID from clock 40 | `4BH` "followed by four dummy bytes. Then, the 128-bit ID is shifted out" (p.43); Figure-40 identical; Table-7: `4BH 00H 00H 00H dummy (UID7-UID0) (continuous)` | **V**, same on both |
+| Response length | a "128bit number" | a "128-bit number" | **V**: 128 bits = 16 bytes |
+| Bit order | Figure 10-42: bits 127 ... 0, MSB first | Figure-40: bits 127 ... 0, MSB first | **V** bit order; **I** that byte 0 carries bits 127-120 (the datasheets label no bytes) |
+| Dummy byte values | "dummy", no value given (command table: 4 DMY bytes, no address bytes, 1+ data bytes) | Table-7 lists `00H` for bytes 2-4 and "dummy" for byte 5 | Puya **I** (don't care, as for 0Bh); UC25HQ80 **X** for non-zero in bytes 2-4 (model refuses), byte 5 **I** (don't care) |
+| Value of the ID | factory-set, read-only, unique per device; no value printed | same | **U**: the model reports the bytes as unknown (mask `FF`) unless a test supplies a fixture |
+| Constant across reads, program/erase, power cycles | "factory-set read-only" | "factory-set read-only" | **I** (read-only and factory-set are stated; that it never changes is the reading) |
+| More than 16 bytes | data bytes "1+" | "(continuous)"; unlike RDSFDP (9.39: rolls over to 0) nothing is said after the 128th bit | **X** (refused) |
+| Wrong number of dummy bytes / CS# early | not described | not described | **X** (refused) |
+| Timing, WIP, WEL | no timing parameter printed; listed under Other Commands | no timing parameter printed | **I**: a read, no cycle, WEL/status/array unchanged |
+| During a program/erase/write-status cycle | not named | RDSFDP is "rejected without any effects on the cycle"; RUID's section says nothing | **X** (refused) |
+| Differences between chips | none in structure | none in structure; only Table-7's explicit `00H` bytes | the dummy-value row |
+
+Not stated anywhere in either document (so not modelled): whether protection bits or SRP affect it, whether deep power-down or reset affects it, any maximum clock frequency for RUID,
+and the UID's internal structure. **Not changed:** the legacy (original) model keeps its fake `FM1-` pattern; the Rust engine still answers `FF`.
 
 ## What real firmware does (AURORA fm1_flash.h)
 
@@ -135,5 +158,5 @@ chip.transact([0x02, 0x00, 0x10, 0x00, 0xaa]);         // page program: WIP=1 un
 clock.advance(1500);
 chip.readStatus();                                     // { value, unknown }
 ```
-Tests: `node ci/machine/chiptests.mjs` (75 tests, milliseconds); also part of the machine self-test quick tier.
+Tests: `node ci/machine/chiptests.mjs` (87 tests, milliseconds); also part of the machine self-test quick tier.
 The same behaviour runs in the chip-profile engine (a Rust port, `fm1-soc/src/spichip.rs`); its tables are generated from `chipspec.mjs`, so the datasheet data has one source.

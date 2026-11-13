@@ -42,19 +42,19 @@ const HIGH_WRITABLE = SR.SRP1 | SR.QE | LB | SR.CMP;               // S8, S9, S1
 const ONE_BYTE_CLEARS = SR.CMP | SR.QE | SR.SRP1;                  // Puya p26: cleared by a one-byte WRSR
 
 const hex = (n) => `0x${n.toString(16).padStart(2, "0")}`;
-const MODELED = new Set([0x06, 0x04, 0x05, 0x35, 0x01, 0x02, 0x81, 0x20, 0x52, 0xd8, 0x60, 0xc7, 0x9f, 0x03, 0x0b]);
+const MODELED = new Set([0x06, 0x04, 0x05, 0x35, 0x01, 0x02, 0x81, 0x20, 0x52, 0xd8, 0x60, 0xc7, 0x9f, 0x03, 0x0b, 0x4b]);
 const NOT_MODELED = new Map([
   [0x50, "nm.vwren"], [0x25, "nm.asi"],
   [0x75, "nm.suspend-resume"], [0xb0, "nm.suspend-resume"], [0x7a, "nm.suspend-resume"], [0x30, "nm.suspend-resume"],
   [0xb9, "nm.deep-power-down"], [0xab, "nm.deep-power-down"], [0x66, "nm.reset"], [0x99, "nm.reset"],
-  [0x44, "nm.security"], [0x42, "nm.security"], [0x48, "nm.security"], [0x4b, "nm.unique-sfdp"], [0x5a, "nm.unique-sfdp"],
+  [0x44, "nm.security"], [0x42, "nm.security"], [0x48, "nm.security"], [0x5a, "nm.unique-sfdp"],
   [0x3b, "nm.multi-io"], [0xbb, "nm.multi-io"], [0x6b, "nm.multi-io"], [0xeb, "nm.multi-io"], [0xa2, "nm.multi-io"], [0x32, "nm.multi-io"],
   [0x90, "nm.electronic-id"], [0x92, "nm.electronic-id"], [0x94, "nm.electronic-id"], [0x77, "nm.burst-wrap"], [0xff, "nm.burst-wrap"],
 ]);
 const ERASE = { 0x81: ["pe", GEOMETRY.page], 0x20: ["se", GEOMETRY.sector], 0x52: ["be32", GEOMETRY.block32], 0xd8: ["be64", GEOMETRY.block64] };
 
 export class ChipModel {
-  #p; #clock; #timing; #wp; #array; #sr; #unknown = 0; #busy = null; #last = -Infinity;
+  #p; #clock; #timing; #wp; #uid; #array; #sr; #unknown = 0; #busy = null; #last = -Infinity;
 
   /**
    * profile  "puya" | "uc25hq80" (or a profile object)
@@ -64,13 +64,17 @@ export class ChipModel {
    * image    initial 1 MiB array (default: all 0xFF). A test fixture choice, not a datasheet claim.
    * status   initial non-volatile status bits (default 0). Defaults of BP are not stated in the datasheets
    *          that were read; this is a fixture choice.
+   * uid      the chip's 128-bit unique ID as the 16 bytes 4Bh transmits (byte 0 first, bits 127-120). Per device and printed in neither
+   *          datasheet: a test fixture, not a datasheet claim. Without it 4Bh reports its bytes as unknown (mask 0xFF).
    */
-  constructor({ profile, clock, timing = "typical", wp = true, image = null, status = 0 } = {}) {
+  constructor({ profile, clock, timing = "typical", wp = true, image = null, status = 0, uid = null } = {}) {
     this.#p = typeof profile === "string" ? PROFILES[profile] : profile;
     if (!this.#p) throw new TypeError(`unknown chip profile ${String(profile)}`);
     if (!clock || typeof clock.now !== "function") throw new TypeError("a clock with now() is required: the model never reads real time");
     if (!(timing in this.#p.timingUs)) throw new RangeError(`timing must be one of ${Object.keys(this.#p.timingUs).join(", ")}`);
     if (image && image.length !== BYTES) throw new RangeError("the image must be exactly 1 MiB");
+    if (uid !== null && !(uid.length === 16 && Array.from(uid).every((b) => Number.isInteger(b) && b >= 0 && b <= 255))) throw new RangeError("uid must be 16 bytes");
+    this.#uid = uid === null ? null : Uint8Array.from(uid);
     if (status & ~(LOW_WRITABLE | HIGH_WRITABLE)) throw new RangeError("initial status may only set writable non-volatile bits");
     this.#clock = clock; this.#timing = timing; this.#wp = !!wp; this.#sr = status;
     this.#array = image ? Uint8Array.from(image) : new Uint8Array(BYTES).fill(0xff);
@@ -103,6 +107,7 @@ export class ChipModel {
       case 0x04: return this.#wrenWrdi(false, tx, partialBits);
       case 0x05: case 0x35: return this.#rdsr(op, tx, read);
       case 0x9f: return this.#rdid(tx, read);
+      case 0x4b: return this.#ruid(tx, read);
       case 0x03: case 0x0b: return this.#readArray(op, tx, read);
       case 0x01: return this.#wrsr(tx, partialBits);
       case 0x02: return this.#pageProgram(tx, partialBits);
@@ -193,6 +198,7 @@ export class ChipModel {
       return this.#result("ignored-busy");
     }
     if (op === 0x03 || op === 0x0b) return this.#result("ignored-busy");
+    if (op === 0x4b) throw new UnspecifiedBehavior("ruid.busy", "Read Unique ID during a program/erase/write-status cycle");
     throw new UnspecifiedBehavior("cmd.busy", `opcode ${hex(op)} issued while WIP=1`);
   }
 
@@ -214,6 +220,15 @@ export class ChipModel {
     if (tx.length !== 1) throw new UnspecifiedBehavior("cmd.extra-bytes", "RDID followed by extra bytes");
     if (read > 3) throw new UnspecifiedBehavior("id.rdid-extra-bytes", `reading ${read} bytes with 9Fh (the ID is 3 bytes)`);
     return this.#result("executed", Uint8Array.from(this.#p.jedec.slice(0, read)), new Uint8Array(read));
+  }
+
+  /** 4Bh: opcode, four dummy bytes, then the 128-bit unique ID, byte 0 (bits 127-120) first. A read: no cycle, no state change. */
+  #ruid(tx, read) {
+    if (tx.length !== 5) throw new UnspecifiedBehavior("ruid.malformed", `4Bh needs exactly four dummy bytes after the opcode, got ${tx.length - 1}`);
+    if (this.#p.name === "uc25hq80" && (tx[1] | tx[2] | tx[3]) !== 0) throw new UnspecifiedBehavior("ruid.dummy-values", "UC25HQ80 Table-7 lists 00H for the first three dummy bytes of 4Bh");
+    if (read > 16) throw new UnspecifiedBehavior("ruid.beyond-128-bits", `reading ${read} bytes with 4Bh (the ID is 16 bytes)`);
+    if (this.#uid === null) return this.#result("executed", new Uint8Array(read), new Uint8Array(read).fill(0xff));   // the value is per device and unknown to the model
+    return this.#result("executed", this.#uid.slice(0, read), new Uint8Array(read));
   }
 
   #readArray(op, tx, read) {

@@ -3,6 +3,8 @@
 // Usage: node ci/engine/gen-transcripts.mjs <out.txt> [--no-partial]   (deterministic: the same file every run; used by build.mjs --test)
 // --no-partial: every transaction ends on a byte boundary (what the machine's byte-wide SPI0 can do); the oracle's answers are recomputed for it.
 // The live-engine replay (ci/machine/chiplivetests.mjs) uses this form; the Rust host tests use the default form.
+// 4Bh Read Unique ID is modelled by the reference model but NOT yet by the Rust engine, so the default transcripts never contain it (the engine answers FF and
+// counts it). --with-ruid appends scenarios that do, for the Rust port to be checked against (their S line carries uid=<32 hex digits>; absent = no fixture).
 // Line formats (see chip_oracle.rs): S/E scenario brackets; T transaction + result; P power cycle; A array check; D array hash; W WIP.
 import { writeFileSync } from "node:fs";
 const { ChipModel, ManualClock, UnspecifiedBehavior, NotModeled } = await import("../machine/chipmodel.mjs");
@@ -17,11 +19,11 @@ const lines = [];
 const stats = { scenarios: 0, transactions: 0, ok: 0, err: {}, arrayChecks: 0, hashes: 0, wipChecks: 0, power: 0 };
 let sc = null;
 
-function begin(name, profile, timing, { hz = 100_000_000, wp = true, image = "ff" } = {}) {
+function begin(name, profile, timing, { hz = 100_000_000, wp = true, image = "ff", uid = null } = {}) {
   const clock = new ManualClock();
-  const chip = new ChipModel({ profile, clock, timing, wp, image: image === "pat" ? pat() : null });
+  const chip = new ChipModel({ profile, clock, timing, wp, image: image === "pat" ? pat() : null, uid: uid ? Array.from(Buffer.from(uid, "hex")) : null });
   sc = { name, chip, clock, dirty: [], profile, timing, hz, image };
-  lines.push(`S ${name} ${profile} ${timing} ${hz} ${wp ? 1 : 0} ${image}`);
+  lines.push(`S ${name} ${profile} ${timing} ${hz} ${wp ? 1 : 0} ${image}${uid ? ` uid=${uid}` : ""}`);
   stats.scenarios++;
   return sc;
 }
@@ -179,7 +181,7 @@ for (const profile of ["puya", "uc25hq80"]) {
 
     // opcodes outside the model, and the Puya configure register
     begin(T("opcodes"), profile, timing);
-    for (const op of [0x15, 0x31, 0x50, 0x25, 0x75, 0xb0, 0x7a, 0x30, 0xb9, 0xab, 0x66, 0x99, 0x44, 0x42, 0x48, 0x4b, 0x5a, 0x3b, 0xbb, 0x6b, 0xeb, 0xa2, 0x32, 0x90, 0x92, 0x94, 0x77, 0xff, 0x00, 0x7f, 0xe5]) {
+    for (const op of [0x15, 0x31, 0x50, 0x25, 0x75, 0xb0, 0x7a, 0x30, 0xb9, 0xab, 0x66, 0x99, 0x44, 0x42, 0x48, 0x5a, 0x3b, 0xbb, 0x6b, 0xeb, 0xa2, 0x32, 0x90, 0x92, 0x94, 0x77, 0xff, 0x00, 0x7f, 0xe5]) {
       t([op]); t([op, 1, 2, 3, 4]); rdsr();
     }
     wren(); t([0x20, 0x01, 0, 0]); t([0x50], { adv: 1 }); t([0xb9], { adv: 1 }); idle(); rdsr(); end();
@@ -210,7 +212,7 @@ for (const profile of ["puya", "uc25hq80"]) {
 }
 
 // ------------------------------------------------------------------ seeded random sequences
-const NOTMOD = [0x15, 0x31, 0x50, 0x25, 0x75, 0xb0, 0x7a, 0x30, 0xb9, 0xab, 0x66, 0x99, 0x44, 0x42, 0x48, 0x4b, 0x5a, 0x3b, 0xbb, 0x6b, 0xeb, 0xa2, 0x32, 0x90, 0x92, 0x94, 0x77, 0xff, 0x00, 0x13, 0xe5];
+const NOTMOD = [0x15, 0x31, 0x50, 0x25, 0x75, 0xb0, 0x7a, 0x30, 0xb9, 0xab, 0x66, 0x99, 0x44, 0x42, 0x48, 0x5a, 0x3b, 0xbb, 0x6b, 0xeb, 0xa2, 0x32, 0x90, 0x92, 0x94, 0x77, 0xff, 0x00, 0x13, 0xe5];
 function randAddr() { const r = rnd(); if (r < 0.04) return 0x100000 + ri(0x1000); if (r < 0.4) return pick(BOUNDS); if (r < 0.6) return pick(BOUNDS) - ri(300) > 0 ? pick(BOUNDS) - ri(300) : 0; return ri(BYTES); }
 function randOp(profile) {
   const r = rnd();
@@ -267,6 +269,24 @@ for (const profile of ["puya", "uc25hq80"]) {
         end();
       }
     }
+  }
+}
+
+// ------------------------------------------------------------------ 4Bh Read Unique ID scenarios (opt-in: --with-ruid)
+if (process.argv.includes("--with-ruid")) {
+  const UIDHEX = "13579bdf02468acef1e2d3c4b5a69788";
+  const RUID = [0x4b, 0, 0, 0, 0];
+  for (const profile of ["puya", "uc25hq80"]) {
+    begin(`ruid-${profile}`, profile, "typical", { uid: UIDHEX, image: "pat" });
+    for (const n of [16, 1, 2, 8, 15, 0, 16]) t(RUID, { read: n });
+    t([0x4b, 0xff, 0xaa, 0x55, 0x12], { read: 16 }); t([0x4b, 0, 0, 0, 0xa5], { read: 16 }); t([0x4b, 1, 0, 0, 0], { read: 4 }); t([0x4b, 0, 0x80, 0, 0], { read: 4 }); t([0x4b, 0, 0, 0xff, 0], { read: 4 });
+    for (const tx of [[0x4b], [0x4b, 0], [0x4b, 0, 0], [0x4b, 0, 0, 0], [0x4b, 0, 0, 0, 0, 0]]) t(tx, { read: 1 });
+    for (const n of [17, 32, 100]) t(RUID, { read: n });
+    wren(); t(RUID, { read: 16 }); rdsr(); t([0x04]); rdsr();
+    for (const tx of [[0x02, 0x01, 0x00, 0x00, 0x0f], [0x20, 0x02, 0x00, 0x00], [0x01, 0x04, 0x00]]) { wren(); t(tx); t(RUID, { read: 16 }); t(RUID, { read: 16, adv: 1 }); idle(); t(RUID, { read: 16 }); rdsr(); }
+    wren(); t([0x60]); idle(); t(RUID, { read: 16 }); power(); t(RUID, { read: 16 }); rdsr(); flushDirty(); end();
+    begin(`ruid-nouid-${profile}`, profile, "maximum", { image: "ff" });
+    t(RUID, { read: 16 }); t(RUID, { read: 3 }); t([0x4b], { read: 16 }); t(RUID, { read: 17 }); rdsr(); end();
   }
 }
 

@@ -22,7 +22,7 @@ export const DOCS = {
     url: "https://www.puyasemi.com/download_path/%E6%95%B0%E6%8D%AE%E6%89%8B%E5%86%8C/Flash/P25Q80H_Datasheet_V1.7.pdf",
   },
   uc25hq80: {
-    title: "UC25HQ80 Datasheet Version 1.2 (UCUNDATA), 60 pages",
+    title: "UC25HQ80 Datasheet Version 1.2 (UCUNDATA), 61 PDF pages (printed numbers coincide with PDF pages)",
     url: "http://www.ucuntech.com/uploads/20220324/d8602ea203b2303c2162d067ce715c4c.pdf",
   },
 };
@@ -187,6 +187,36 @@ add("id.rdid-busy-wrsr", "RDID during a write-status-register cycle",
 add("id.rdid-extra-bytes", "reading more than the 3 ID bytes with 9Fh",
   X([P(50, "10.35 RDID: 24-bit ID, nothing after it")]), X([U(14, "Table-8.0"), U(39, "9.32 RDID")]));
 
+// --- read unique ID (4Bh). Added in the 4Bh Stage A extension; read from both datasheets' dedicated sections (P p54 10.41, U p43-44 9.38) and
+// command tables (P p21, U p13), the figures rendered and read as images. The ID's VALUE is per device and appears in neither document.
+add("ruid.command", "4Bh Read Unique ID: opcode, then four dummy bytes, then the unique ID is shifted out; CS# high ends the command",
+  V([P(54, "10.41 RUID text: 'Dummy Byte1 -> Dummy Byte2 -> Dummy Byte3 -> Dummy Byte4 -> 128bit Unique ID Out -> CS# goes high'; Figure 10-42"), P(21, "10.1 Command set (Cont'd): RUID 4Bh, DMY bytes 4, data bytes 1+")]),
+  V([U(43, "9.38 RUID: 'the command code 4BH followed by four dummy bytes. Then, the 128-bit ID is shifted out'"), U(44, "Figure-40: command, 3 bytes dummy, dummy byte, 128 bit unique serial number"), U(13, "Table-7: 4BH 00H 00H 00H dummy (UID7-UID0) (continuous)")]));
+add("ruid.length-order", "the ID is 128 bits (16 bytes) and the first bit shifted out is bit 127 (MSB); byte 0 of the response carries bits 127-120",
+  I([P(54, "10.41 RUID: 'factory-set read-only 128bit number'; Figure 10-42 shows bits 127 ... 0, MSB first"), P(4, "Features: 128 bit unique ID for each device")], "verified: 128 bits, MSB (bit 127) first; interpretation: the bits are grouped into bytes in transmission order, byte 0 = bits 127-120 (the datasheet labels no bytes)"),
+  I([U(43, "9.38 RUID: 'factory-set read-only 128-bit number'"), U(44, "Figure-40: bits 127 ... 0, MSB first"), U(4, "Features: 128-Bit Unique ID for each device")], "verified: 128 bits, MSB (bit 127) first; interpretation: grouped into bytes in transmission order, byte 0 = bits 127-120"));
+add("ruid.dummy-values", "the values of the dummy bytes",
+  I([P(54, "10.41 RUID: 'Dummy Byte1-4'")], "the datasheet calls them dummy and gives no value; read as don't-care, as the model reads 0Bh's dummy byte"),
+  X([U(13, "Table-7: bytes 2-4 are listed as 00H, byte 5 as dummy"), U(43, "9.38 RUID: 'four dummy bytes'")], "the table lists 00H for the first three; whether another value changes anything is not stated, so the model refuses non-zero values there. The fourth (dummy) byte is read as don't-care"));
+add("ruid.constant", "the ID is factory-set and read-only, so a read returns the same value every time, unchanged by program, erase, write-status and power cycles",
+  I([P(54, "10.41 RUID: 'factory-set read-only 128bit number that is unique to each P25Qxx device'")], "'factory-set' and 'read-only' are stated; that this means a constant value is the reading"),
+  I([U(43, "9.38 RUID: 'factory-set read-only 128-bit number that is unique to each UC25HQxx device'")], "'factory-set' and 'read-only' are stated; that this means a constant value is the reading"));
+add("ruid.value", "the value of the unique ID",
+  X([P(54, "10.41 RUID: unique to each device; no value is printed")], "per-device and not in the datasheet: the model reports the bytes as unknown (mask 0xFF) unless the caller supplies a fixture, which is a test choice, not a datasheet claim"),
+  X([U(43, "9.38 RUID: unique to each device; no value is printed")], "per-device and not in the datasheet: the model reports the bytes as unknown (mask 0xFF) unless the caller supplies a fixture"));
+add("ruid.beyond-128-bits", "reading more than 16 bytes with 4Bh",
+  X([P(21, "10.1 Command set: data bytes '1+'"), P(54, "10.41 RUID: 128 bit ID Out, then CS# goes high")], "continued clocking is allowed by the table but the content after the 128th bit is not defined"),
+  X([U(13, "Table-7: '(continuous)'"), U(44, "Figure-40: 128 bit unique serial number")], "unlike RDSFDP (9.39: rolls over to 0), RUID's text does not say what follows the 128th bit"));
+add("ruid.malformed", "4Bh with fewer or more than four dummy bytes before the data",
+  X([P(54, "10.41 RUID: exactly four dummy bytes in the sequence")], "CS# rising early, or other lengths, are not described"),
+  X([U(43, "9.38 RUID: 'four dummy bytes'")], "CS# rising early, or other lengths, are not described"));
+add("ruid.no-cycle", "RUID is a read: it starts no cycle (WIP stays 0) and leaves WEL, the status register and the array unchanged; neither datasheet gives a timing figure for it",
+  I([P(54, "10.41 RUID: accesses a read-only number"), P(21, "10.1 Command set (Cont'd): listed under Other Commands; no write-enable requirement stated")], "a read of a read-only number; no AC timing is printed for RUID"),
+  I([U(43, "9.38 RUID: accesses a read-only number"), U(13, "Table-7: no WREN involved")], "a read of a read-only number; no AC timing is printed for RUID"));
+add("ruid.busy", "4Bh while a program/erase/write-status cycle is in progress",
+  X([P(18, "8 Device Operation: the commands accepted during a cycle are not listed for RUID")], "not stated"),
+  X([U(44, "9.39 RDSFDP: 'rejected without having any effects on the cycle'; 9.38 RUID says nothing")], "UC states it for RDSFDP only"));
+
 // --- status register
 add("sr.layout", "16-bit status register; 05h returns S7-S0, 35h returns S15-S8",
   V([P(23, "10.5 RDSR, Status Register table")]), V([U(8, "7 Status Register, Table-4"), U(16, "9.4 RDSR")]));
@@ -349,7 +379,7 @@ add("nm.suspend-resume", "program/erase suspend and resume (75h/B0h, 7Ah/30h) an
 add("nm.deep-power-down", "deep power-down and release (B9h, ABh)", N([P(21, "10.1 Commands listing")]), N([U(13, "9 Table-7")]));
 add("nm.reset", "reset enable/reset (66h, 99h)", N([P(21, "10.1 Commands listing")]), N([U(13, "9 Table-7")]));
 add("nm.security", "security registers (44h, 42h, 48h)", N([P(20, "10.1 Commands listing")]), N([U(13, "9 Table-7")]));
-add("nm.unique-sfdp", "unique ID (4Bh) and SFDP (5Ah)", N([P(21, "10.1 Commands listing")]), N([U(13, "9 Table-7")]));
+add("nm.unique-sfdp", "SFDP (5Ah). (4Bh Read Unique ID moved out of this entry: see ruid.*; the id is kept so existing transcripts and the engine still agree)", N([P(21, "10.1 Commands listing")]), N([U(13, "9 Table-7")]));
 add("nm.multi-io", "dual and quad reads and programs", N([P(20, "10.1 Commands listing")]), N([U(12, "9 Table-7")]));
 add("nm.electronic-id", "REMS/DREMS/QREMS (90h, 92h, 94h)", N([P(21, "10.1 Commands listing")]), N([U(13, "9 Table-7")]));
 add("nm.burst-wrap", "set burst length (77h) and continuous read mode reset (FFh)", N([P(21, "10.1 Commands listing")]), N([U(12, "9 Table-7")]));

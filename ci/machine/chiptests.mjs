@@ -449,13 +449,82 @@ export function registerChipTests(test) {
     throwsId(() => chip.transact([0x9f], { read: 3 }), UnspecifiedBehavior, "id.rdid-busy-wrsr");
   });
 
+  // ---------------------------------------------------------------- 4Bh Read Unique ID (4Bh Stage A extension)
+  // The ID bytes below are a TEST FIXTURE (the real value is per device and in neither datasheet). Everything else is from P p54 / p21, U p43-44 / p13.
+  const UID = [0x13, 0x57, 0x9b, 0xdf, 0x02, 0x46, 0x8a, 0xce, 0xf1, 0xe2, 0xd3, 0xc4, 0xb5, 0xa6, 0x97, 0x88];
+  const RUID = [0x4b, 0, 0, 0, 0];
+  both(["ruid.command", "ruid.length-order"], "4Bh: opcode, four dummy bytes, then the 128-bit ID, first transmitted byte first, any length up to 16 bytes", (p) => {
+    const { chip } = mk(p, { uid: UID });
+    const all = chip.transact(RUID, { read: 16 });
+    assert.equal(all.outcome, "executed");
+    assert.deepEqual([...all.out], UID);
+    assert.deepEqual([...all.unknown], new Array(16).fill(0));
+    for (const n of [1, 2, 8, 15]) assert.deepEqual([...chip.transact(RUID, { read: n }).out], UID.slice(0, n), `${n} bytes`);
+    assert.equal(chip.transact(RUID, { read: 0 }).out.length, 0, "no data bytes: the command is just accepted");
+    // the first bit transmitted is bit 127 (the MSB of byte 0), the last is bit 0
+    const bits = [...chip.transact(RUID, { read: 16 }).out].map((b) => b.toString(2).padStart(8, "0")).join("");
+    assert.equal(bits.length, 128); assert.equal(bits.slice(0, 8), "00010011"); assert.equal(bits.slice(-8), "10001000");
+  });
+  both(["ruid.constant", "ruid.no-cycle"], "4Bh is a read: same ID every time, across program, erase, WRSR, chip erase and power cycles; no cycle, WEL and status untouched", (p) => {
+    const { chip, clock, wren, finish, st } = mk(p, { uid: UID, image: zeros() });
+    const read = () => [...chip.transact(RUID, { read: 16 }).out];
+    assert.deepEqual(read(), UID); assert.deepEqual(read(), UID, "repeated reads");
+    assert.equal(chip.busyUntil(), null, "no cycle: WIP never set"); assert.equal(st().value, 0, "status unchanged");
+    wren(); assert.deepEqual(read(), UID);
+    assert.equal(st().value, S.WEL, "a read leaves WEL as it was"); assert.equal(chip.busyUntil(), null);
+    chip.transact([0x04]);
+    wren(); chip.transact(OPS.pp); finish(); assert.deepEqual(read(), UID, "after a program");
+    wren(); chip.transact(OPS.se); finish(); assert.deepEqual(read(), UID, "after an erase");
+    wren(); chip.transact([0x60]); finish(); assert.deepEqual(read(), UID, "after a chip erase");
+    wren(); chip.transact([0x01, 0x1c, 0x42]); finish(); assert.deepEqual(read(), UID, "after a write-status");
+    chip.powerCycle(); assert.deepEqual(read(), UID, "after a power cycle");
+    clock.advance(1e6); assert.deepEqual(read(), UID, "later");
+  });
+  both(["ruid.value"], "4Bh without a supplied ID: the value is reported unknown (mask FF), the command structure is still enforced, and it is never the legacy FM1- pattern", (p) => {
+    const { chip } = mk(p);
+    const r = chip.transact(RUID, { read: 16 });
+    assert.equal(r.outcome, "executed");
+    assert.deepEqual([...r.unknown], new Array(16).fill(0xff), "every bit unknown");
+    assert.notDeepEqual([...r.out.slice(0, 4)], [0x46, 0x4d, 0x31, 0x2d], "the emulator's original FM1- pattern is not a datasheet value");
+    throwsId(() => chip.transact([0x4b], { read: 16 }), UnspecifiedBehavior, "ruid.malformed");
+    assert.throws(() => new ChipModel({ profile: p, clock: new ManualClock(), uid: [1, 2, 3] }), RangeError);
+    assert.throws(() => new ChipModel({ profile: p, clock: new ManualClock(), uid: new Array(16).fill(256) }), RangeError);
+  });
+  both(["ruid.malformed", "ruid.beyond-128-bits"], "4Bh with the wrong number of dummy bytes, or more than 16 data bytes, is refused rather than guessed", (p) => {
+    const { chip } = mk(p, { uid: UID });
+    for (const tx of [[0x4b], [0x4b, 0], [0x4b, 0, 0], [0x4b, 0, 0, 0], [0x4b, 0, 0, 0, 0, 0], [0x4b, 0, 0, 0, 0, 0, 0]]) throwsId(() => chip.transact(tx, { read: 1 }), UnspecifiedBehavior, "ruid.malformed");
+    for (const n of [17, 18, 32, 100]) throwsId(() => chip.transact(RUID, { read: n }), UnspecifiedBehavior, "ruid.beyond-128-bits");
+    assert.deepEqual([...chip.transact(RUID, { read: 16 }).out], UID, "the refusals changed nothing");
+  });
+  both(["ruid.busy"], "4Bh during a program/erase/write-status cycle is refused (unspecified) and does not disturb the cycle", (p) => {
+    const { chip, wren, finish, st } = mk(p, { uid: UID, image: zeros() });
+    for (const tx of [OPS.pp, OPS.se, [0x01, 0x04, 0x00]]) {
+      wren(); chip.transact(tx);
+      throwsId(() => chip.transact(RUID, { read: 16 }), UnspecifiedBehavior, "ruid.busy");
+      assert.notEqual(chip.busyUntil(), null, "the cycle is undisturbed");
+      finish();
+      assert.deepEqual([...chip.transact(RUID, { read: 16 }).out], UID, "readable again afterwards");
+    }
+    assert.equal(st().value & S.WIP, 0);
+  });
+  T("puya", ["ruid.dummy-values"], "4Bh: the dummy bytes carry no meaning (read as don't-care, an interpretation)", () => {
+    const { chip } = mk("puya", { uid: UID });
+    assert.deepEqual([...chip.transact([0x4b, 0xff, 0xaa, 0x55, 0x12], { read: 16 }).out], UID);
+  });
+  T("uc25hq80", ["ruid.dummy-values"], "4Bh: Table-7 lists 00H for the first three dummy bytes: another value there is unspecified and refused; the fourth is don't-care", () => {
+    const { chip } = mk("uc25hq80", { uid: UID });
+    for (const tx of [[0x4b, 1, 0, 0, 0], [0x4b, 0, 0x80, 0, 0], [0x4b, 0, 0, 0xff, 0]]) throwsId(() => chip.transact(tx, { read: 16 }), UnspecifiedBehavior, "ruid.dummy-values");
+    assert.deepEqual([...chip.transact([0x4b, 0, 0, 0, 0xa5], { read: 16 }).out], UID, "the fourth dummy byte is not constrained");
+    assert.deepEqual([...chip.transact(RUID, { read: 16 }).out], UID);
+  });
+
   // ---------------------------------------------------------------- scope limits
   both(["cmd.unknown", "nm.vwren", "nm.asi", "nm.suspend-resume", "nm.deep-power-down", "nm.reset", "nm.security", "nm.unique-sfdp", "nm.multi-io", "nm.electronic-id", "nm.burst-wrap", "nm.power-loss"],
     "everything outside the model's scope is refused, not guessed", (p) => {
       const { chip, wren } = mk(p);
       const ids = { 0x50: "nm.vwren", 0x25: "nm.asi", 0x75: "nm.suspend-resume", 0xb0: "nm.suspend-resume", 0x7a: "nm.suspend-resume", 0x30: "nm.suspend-resume",
         0xb9: "nm.deep-power-down", 0xab: "nm.deep-power-down", 0x66: "nm.reset", 0x99: "nm.reset", 0x44: "nm.security", 0x42: "nm.security", 0x48: "nm.security",
-        0x4b: "nm.unique-sfdp", 0x5a: "nm.unique-sfdp", 0x3b: "nm.multi-io", 0xeb: "nm.multi-io", 0x32: "nm.multi-io", 0x90: "nm.electronic-id", 0x94: "nm.electronic-id",
+        0x5a: "nm.unique-sfdp", 0x3b: "nm.multi-io", 0xeb: "nm.multi-io", 0x32: "nm.multi-io", 0x90: "nm.electronic-id", 0x94: "nm.electronic-id",
         0x77: "nm.burst-wrap", 0xff: "nm.burst-wrap", 0xee: "cmd.unknown" };
       for (const [op, id] of Object.entries(ids)) throwsId(() => chip.transact([Number(op)]), NotModeled, id);
       wren(); chip.transact(OPS.pp);
@@ -496,7 +565,7 @@ export function registerChipTests(test) {
 
   // ---------------------------------------------------------------- traceability (registered last)
   test("chip model: every modelled behaviour has page-level datasheet citations and at least one test, per profile", () => {
-    const LEVELS = new Set(["verified", "interpretation", "unspecified", "not-modeled"]), PAGES = { puya: 70, uc25hq80: 60 };
+    const LEVELS = new Set(["verified", "interpretation", "unspecified", "not-modeled"]), PAGES = { puya: 70, uc25hq80: 61 };
     const problems = [];
     for (const [id, b] of Object.entries(BEHAVIORS)) {
       assert.ok(b.summary, `${id} has a summary`);
