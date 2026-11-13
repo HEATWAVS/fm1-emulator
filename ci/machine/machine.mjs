@@ -4,6 +4,7 @@
 // flash changes over exactly as the app saves them.
 import { createHash } from "node:crypto";
 import { FLASH_SIZE, SECTOR, diffSectors, corruptSectors } from "./flash.mjs";
+import { FlashIdError, parseFlashId, applyFlashId, readFlashId } from "./flashid.mjs";
 
 export const SAMPLE_RATE = 44100;           // the engine renders at 44.1 kHz
 const QUANTUM = 128;                         // frames per fm1_render call, as the app does
@@ -35,9 +36,17 @@ export class Fm1Machine {
    *   sectors  flash sector records applied before the first instruction runs
    *   jit      WebAssembly JIT; off by default (the interpreter is the deterministic reference)
    *   usb      plug the virtual USB host, as the app and the audit script do (default true)
+   *   flashId  "puya" (older hardware, 85 60 14) or "uc25hq80" (newer, B3 60 14); see flashid.mjs.
+   *            Unset (the default): nothing is touched and the engine's own ID is used, exactly as before.
+   *            ID selection only: no other chip behaviour changes. Refused (FlashIdError) on an engine
+   *            build without a validated layout, and on a non-FM-1 board.
    */
-  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true } = {}) {
+  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true, flashId = null } = {}) {
     requires(engine, "boot", "flashRead");
+    const preset = flashId === null || flashId === undefined ? null : parseFlashId(flashId);   // reject bad input before booting
+    if (preset && !engine.flashIdLayout) {
+      throw new FlashIdError("unsupported-engine", `engine "${engine.name}" (sha256 ${engine.wasmSha256.slice(0, 12)}…) has no validated flash-ID layout`);
+    }
     const x = engine.instantiate();
     x.fm1_jit(jit ? 1 : 0, 16);
     x.fm1_ahead?.(1024);
@@ -60,8 +69,18 @@ export class Fm1Machine {
       if (x.fm1_flash_restore(put(bytes), bytes.length) !== 0) throw new BootError("flash-rejected", "the engine refused the flash sectors");
     }
     if (usb) x.fm1_usb_plug?.();
-    return new Fm1Machine(engine, x, pkg, { mhz, jit, usb });
+    let flashIdInfo = null;
+    if (preset) {                              // before the first instruction runs
+      if (x.fm1_board() !== 0) throw new FlashIdError("unsupported-board", "flash ID selection is for the FM-1 board only");
+      flashIdInfo = applyFlashId(x, engine.flashIdLayout, preset);
+    }
+    const machine = new Fm1Machine(engine, x, pkg, { mhz, jit, usb, flashId: preset ? preset.name : null });
+    machine.flashIdInfo = flashIdInfo;         // null unless an ID was selected
+    return machine;
   }
+
+  /** The ID the engine's flash chip currently reports ({bytes, name, address}); needs a validated engine build. */
+  flashId() { return readFlashId(this.x, this.engine.flashIdLayout); }
 
   // ------------------------------------------------------------ running
   /** Advance the machine by `ms` of emulated time (stops early if the CPU halts). */

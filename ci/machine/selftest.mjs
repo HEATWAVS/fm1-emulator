@@ -9,8 +9,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadEngine, EMULATOR_DIR } from "./engine.mjs";
+import { spawnSync } from "node:child_process";
+import { loadEngine, EMULATOR_DIR, FLASH_ID_LAYOUTS } from "./engine.mjs";
 import { Fm1Machine, BootError, corruptedSectors, requires } from "./machine.mjs";
+import { FlashIdError, FLASH_IDS, parseFlashId, locateLiveFlashId, applyFlashId } from "./flashid.mjs";
 import { watch } from "./monitor.mjs";
 import { FLASH_SIZE, SECTOR, packRecords, unpackRecords, parseCorruption, corruptSectors, diffSectors } from "./flash.mjs";
 
@@ -129,6 +131,192 @@ test("corruption specs are validated", () => {
 
 test("a file that is not a firmware package is rejected, not booted", () => {
   assert.throws(() => Fm1Machine.boot(engine, new Uint8Array(5000).fill(1)), (e) => e instanceof BootError && e.code === "package-rejected");
+});
+
+// ======================================================================= flash ID selection (Component 2)
+// ID selection only: these tests prove the JEDEC bytes the firmware sees can be chosen safely. They do
+// NOT claim the engine behaves like a UC25HQ80 in any other way (see docs/dev/DECISIONS.md D11).
+const OLD = [0x85, 0x60, 0x14], NEW = [0xb3, 0x60, 0x14];
+const catalog = JSON.parse(readFileSync(resolve(EMULATOR_DIR, "firmwares.json"), "utf8")).firmwares;
+const catalogPkg = (id) => new Uint8Array(readFileSync(resolve(EMULATOR_DIR, catalog.find((c) => c.id === id).package)));
+const QUADRO = catalogPkg("quadro-fm1");   // writes its settings to flash only if it recognises the chip
+const memo = new Map();
+const runCase = (key, pkg, options = {}, seconds = 4) => {   // a deterministic run, remembered
+  if (!memo.has(key)) {
+    const m = Fm1Machine.boot(engine, pkg, options);
+    const r = watch(m, { seconds });
+    memo.set(key, { verdict: r.verdict, lcdHash: r.final.lcdHash, flashHash: m.flashHash(), flashRevision: r.final.flashRevision, emulatedMs: r.emulatedMs, idleMs: r.final.idleMs, colours: r.final.lcdColours });
+  }
+  return memo.get(key);
+};
+const idAt = (m, at) => [...new Uint8Array(m.x.memory.buffer, at, 3)];
+const code = (c) => (e) => e instanceof FlashIdError && e.code === c;
+
+test("flash ID: this exact engine build has a validated layout; unknown builds do not", () => {
+  assert.equal(engine.capabilities.flashIdPatch, true);
+  assert.deepEqual(engine.flashIdLayout, FLASH_ID_LAYOUTS[engine.wasmSha256]);
+  assert.equal(engine.capabilities.selectFlashId, false, "no native engine export yet");
+});
+
+test("flash ID: requested IDs are validated (only the two hardware revisions are selectable)", () => {
+  for (const [input, name] of [["puya", "puya"], ["PUYA", "puya"], ["old", "puya"], ["0x856014", "puya"], ["856014", "puya"], [[0x85, 0x60, 0x14], "puya"],
+    ["uc25hq80", "uc25hq80"], ["new", "uc25hq80"], ["0xB36014", "uc25hq80"], [[179, 96, 20], "uc25hq80"]]) assert.equal(parseFlashId(input).name, name, JSON.stringify(input));
+  for (const bad of ["", "0x000000", "eb6014", "85 60 14", "0x85601", "0x8560145", "newer", [1, 2, 3], [0x85, 0x60], [256, 0, 0], 0x856014, {}, true])
+    assert.throws(() => parseFlashId(bad), code("invalid-id"), JSON.stringify(bad));
+  assert.throws(() => Fm1Machine.boot(engine, FELUCCA, { flashId: "0x000000" }), code("invalid-id"));
+  assert.throws(() => Fm1Machine.boot(engine, FELUCCA, { flashId: "eb6014" }), code("invalid-id"), "the SMK-37's ID is recognised, not selectable");
+});
+
+test("flash ID: the live copy is PROVEN (engine's own getter), and only it is patched", () => {
+  const m = Fm1Machine.boot(engine, FELUCCA);
+  const found = locateLiveFlashId(m.x, engine.flashIdLayout);
+  assert.equal(found.copies, 3, "3 chip-structure copies carry a known ID");
+  assert.deepEqual(found.bytes, OLD);
+  const others = found.candidates.map((c) => c + engine.flashIdLayout.jedecOffsetFromFlashPtr).filter((a) => a !== found.address);
+  assert.equal(others.length, 2);
+  const n = Fm1Machine.boot(engine, FELUCCA, { flashId: "uc25hq80" });
+  assert.equal(n.flashIdInfo.address, found.address, "same live copy on a fresh boot");
+  assert.deepEqual(idAt(n, found.address), NEW);
+  for (const a of others) assert.deepEqual(idAt(n, a), OLD, "stale copies are left alone");
+});
+
+test("flash ID: both IDs read back; the default is the older chip", () => {
+  const def = Fm1Machine.boot(engine, FELUCCA);
+  assert.equal(def.flashIdInfo, null);
+  assert.equal(def.flashId().name, "puya");
+  assert.equal(Fm1Machine.boot(engine, FELUCCA, { flashId: "puya" }).flashId().name, "puya");
+  const n = Fm1Machine.boot(engine, FELUCCA, { flashId: "new" });
+  assert.deepEqual(n.flashId().bytes, NEW);
+  assert.deepEqual(n.flashIdInfo.previous, OLD);
+});
+
+test("flash ID: default is untouched. Explicit puya == no option; uc25hq80 differs by exactly one byte of memory", () => {
+  const snap = (opts) => new Uint8Array(Fm1Machine.boot(engine, FELUCCA, opts).x.memory.buffer).slice();
+  const a = snap({}), b = snap({ flashId: "puya" }), c = snap({ flashId: "uc25hq80" });
+  const diff = (p, q) => { const d = []; for (let i = 0; i < p.length; i++) if (p[i] !== q[i]) d.push(i); return d; };
+  assert.deepEqual(diff(a, b), [], "writing the default ID changes nothing in engine memory");
+  const d = diff(a, c);
+  assert.equal(d.length, 1, "0x85 -> 0xB3; the other two ID bytes are equal");
+  assert.equal(a[d[0]], 0x85); assert.equal(c[d[0]], 0xb3);
+  // and a whole run matches Component 1's behaviour exactly
+  const r0 = runCase("felucca|default", FELUCCA, {}, 2), r1 = runCase("felucca|puya", FELUCCA, { flashId: "puya" }, 2);
+  assert.deepEqual(r1, r0);
+});
+
+test("flash ID: firmware that probes the chip reacts (quadro-fm1 stops saving; AURORA's screen changes)", () => {
+  const old = runCase("quadro|puya", QUADRO, { flashId: "puya" }), nu = runCase("quadro|uc25hq80", QUADRO, { flashId: "uc25hq80" });
+  assert.deepEqual(runCase("quadro|default", QUADRO, {}), old, "default == older hardware");
+  assert.ok(old.flashRevision > 0 && nu.flashRevision === 0, `flash writes ${old.flashRevision} -> ${nu.flashRevision}`);
+  assert.notEqual(old.flashHash, nu.flashHash);
+  const aurora = catalogPkg("aurora");
+  assert.notEqual(runCase("aurora|puya", aurora, { flashId: "puya" }).lcdHash, runCase("aurora|uc25hq80", aurora, { flashId: "uc25hq80" }).lcdHash);
+});
+
+test("flash ID: justification for patching only the live copy (stale copies are inert; live-only == all three)", () => {
+  const live = runCase("quadro|uc25hq80", QUADRO, { flashId: "uc25hq80" });
+  const raw = (which) => {
+    const m = Fm1Machine.boot(engine, QUADRO);
+    const f = locateLiveFlashId(m.x, engine.flashIdLayout);
+    const all = f.candidates.map((c) => c + engine.flashIdLayout.jedecOffsetFromFlashPtr);
+    for (const a of which(all, f.address)) new Uint8Array(m.x.memory.buffer).set(NEW, a);
+    const r = watch(m, { seconds: 4 });
+    return { lcdHash: r.final.lcdHash, flashRevision: r.final.flashRevision, flashHash: m.flashHash() };
+  };
+  const stale = raw((all, liveAt) => all.filter((a) => a !== liveAt)), every = raw((all) => all);
+  const def = runCase("quadro|default", QUADRO, {});
+  assert.equal(stale.flashRevision, def.flashRevision, "patching only the stale copies changes nothing");
+  assert.equal(stale.lcdHash, def.lcdHash);
+  assert.equal(every.flashRevision, live.flashRevision, "patching all three behaves like the live copy alone");
+  assert.equal(every.lcdHash, live.lcdHash);
+});
+
+test("flash ID: runs are repeatable on both IDs", () => {
+  for (const id of ["puya", "uc25hq80"]) {
+    const first = runCase(`quadro|${id}`, QUADRO, { flashId: id });
+    const m = Fm1Machine.boot(engine, QUADRO, { flashId: id }), r = watch(m, { seconds: 4 });
+    assert.deepEqual({ verdict: r.verdict, lcdHash: r.final.lcdHash, flashHash: m.flashHash(), flashRevision: r.final.flashRevision, emulatedMs: r.emulatedMs, idleMs: r.final.idleMs, colours: r.final.lcdColours }, first, id);
+  }
+});
+
+test("flash ID: a power cycle keeps the chosen ID; it can be changed at power-on; default stays default", () => {
+  const n = Fm1Machine.boot(engine, FELUCCA, { flashId: "uc25hq80" });
+  assert.equal(n.options.flashId, "uc25hq80");
+  assert.equal(n.powerCycle().flashId().name, "uc25hq80");
+  assert.equal(n.powerCycle({ flashId: "puya" }).flashId().name, "puya", "swap the chip while it is off");
+  assert.equal(n.powerCycle({ flashId: null }).flashIdInfo, null);
+  const d = Fm1Machine.boot(engine, FELUCCA);
+  const cycled = d.powerCycle();
+  assert.equal(cycled.flashIdInfo, null);
+  assert.equal(cycled.flashId().name, "puya");
+  const corrupt = n.powerCycle({ corrupt: ["zero:0x20000"] });          // other power-cycle features still compose
+  assert.equal(corrupt.flashId().name, "uc25hq80");
+  assert.deepEqual(corrupt.changedSectors().map((s) => s.at), [0x20000]);
+});
+
+test("flash ID: an engine build without a validated layout is refused; the default path still works", () => {
+  const stranger = { ...engine, wasmSha256: "0".repeat(64), flashIdLayout: null, capabilities: { ...engine.capabilities, flashIdPatch: false } };
+  assert.throws(() => Fm1Machine.boot(stranger, FELUCCA, { flashId: "puya" }), code("unsupported-engine"));
+  assert.throws(() => Fm1Machine.boot(stranger, FELUCCA, { flashId: "uc25hq80" }), code("unsupported-engine"));
+  const plain = Fm1Machine.boot(stranger, FELUCCA);                       // no ID requested: untouched, works
+  assert.equal(watch(plain, { seconds: 1 }).verdict, "booted");
+  assert.throws(() => plain.flashId(), code("unsupported-engine"));
+  assert.throws(() => locateLiveFlashId(plain.x, null), code("unsupported-engine"));
+});
+
+test("flash ID: refused on a board other than the FM-1", () => {
+  const smk = { ...engine, instantiate: () => ({ ...engine.instantiate(), fm1_board: () => 1 }) };   // (the export object is frozen: copy it)
+  assert.throws(() => Fm1Machine.boot(smk, FELUCCA, { flashId: "uc25hq80" }), code("unsupported-board"));
+  assert.equal(Fm1Machine.boot(smk, FELUCCA).flashIdInfo, null, "without the option nothing is checked or touched");
+});
+
+// A stand-in for the engine's memory, so the safety refusals can be tested without a real engine.
+function fakeX({ copies = [0x100, 0x2000, 0x4000], liveWord = 0x4024, idBytes = OLD, stalePtr = false, constantRevision = false } = {}) {
+  const mem = new Uint8Array(1 << 16), dv = new DataView(mem.buffer), PTR = 0x8000;
+  for (const c of copies) { dv.setUint32(c, PTR, true); mem.set(idBytes, c + 48); }
+  if (stalePtr) dv.setUint32(0x6000, PTR + 4, true);
+  return { mem, dv, x: { memory: { buffer: mem.buffer }, fm1_flash: () => PTR, fm1_flash_len: () => 256, fm1_xip: () => 0x9000, fm1_xip_len: () => 16, fm1_flash_base: () => 0xa000,
+    fm1_flash_revision: () => (constantRevision ? 0 : dv.getInt32(liveWord, true)) } };       // a signed i32, like the real export
+}
+const LAYOUT = { jedecOffsetFromFlashPtr: 48, searchWindow: 256, copies: 3 };
+
+test("flash ID safety (synthetic memory): proves the live copy, patches only it, restores every probe write", () => {
+  const { mem, x } = fakeX();
+  const before = mem.slice();
+  const found = locateLiveFlashId(x, LAYOUT);
+  assert.equal(found.address, 0x4000 + 48);
+  assert.deepEqual(mem, before, "locating changes nothing");
+  const r = applyFlashId(x, LAYOUT, FLASH_IDS.uc25hq80);
+  assert.deepEqual([...mem.slice(0x4030, 0x4033)], NEW);
+  assert.deepEqual([...mem.slice(0x130, 0x133)], OLD); assert.deepEqual([...mem.slice(0x2030, 0x2033)], OLD);
+  const changed = []; for (let i = 0; i < mem.length; i++) if (mem[i] !== before[i]) changed.push(i);
+  assert.deepEqual(changed, [0x4030], "exactly one byte differs");
+  assert.equal(r.method, "runtime-patch");
+});
+
+test("flash ID safety (synthetic memory): wrong layout, wrong ID, no live copy, ambiguity: all refuse and change nothing", () => {
+  const refuse = (setup, expectedCode, layout = LAYOUT) => {
+    const { mem, x } = fakeX(setup), before = mem.slice();
+    assert.throws(() => applyFlashId(x, layout, FLASH_IDS.uc25hq80), code(expectedCode), JSON.stringify(setup));
+    assert.deepEqual(mem, before, `memory untouched after ${expectedCode}`);
+  };
+  refuse({ copies: [0x100, 0x2000] }, "layout-mismatch");                          // fewer copies than validated
+  refuse({ copies: [0x100, 0x2000, 0x4000, 0x6000] }, "layout-mismatch");          // more copies than validated
+  refuse({ idBytes: [0x12, 0x34, 0x56] }, "layout-mismatch");                      // not a known ID at the validated offset
+  refuse({ constantRevision: true }, "no-live-copy");                              // getter never echoes: cannot prove liveness
+  refuse({ copies: [0x100, 0x140, 0x4000], liveWord: 0x124 }, "ambiguous");        // two candidates' windows reach the live word
+  refuse({}, "unsupported-engine", null);                                          // no validated layout at all
+  refuse({}, "layout-mismatch", { ...LAYOUT, jedecOffsetFromFlashPtr: 52 });       // layout offset does not match this memory
+});
+
+test("flash ID: CLI default output is unchanged; the option and invalid IDs behave", () => {
+  const cli = (...args) => spawnSync(process.execPath, [resolve(import.meta.dirname, "cli.mjs"), ...args], { encoding: "utf8" });
+  const plain = JSON.parse(cli("--fw", "felucca", "--seconds", "1", "--json").stdout);
+  assert.deepEqual(Object.keys(plain), ["engine", "package", "options", "expected", "pass", "verdict", "haltedAtMs", "emulatedMs", "final", "activity", "flash"]);
+  assert.deepEqual(Object.keys(plain.options), ["seconds", "mhz", "corrupt", "flashFile"]);
+  const withId = JSON.parse(cli("--fw", "felucca", "--seconds", "1", "--json", "--flash-id", "new").stdout);
+  assert.equal(withId.flashId.name, "uc25hq80"); assert.equal(withId.options.flashId, "new");
+  const bad = cli("--fw", "felucca", "--flash-id", "0xdeadbe");
+  assert.equal(bad.status, 2); assert.match(bad.stderr, /unsupported flash ID/);
 });
 
 let failed = 0;

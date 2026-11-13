@@ -9,6 +9,9 @@
 //   --fw ID             a bundled firmware by catalog id (site/emulator/firmwares.json)
 //   --flash FILE        start from saved flash sector records (see --save-flash)
 //   --corrupt SPEC      corrupt flash before boot; repeatable: zero:ADDR[:LEN] erase:ADDR[:LEN] flip:ADDR:LEN:COUNT[:SEED]
+//   --flash-id ID       make the flash chip report the older (puya = 85 60 14, alias old) or newer
+//                       (uc25hq80 = B3 60 14, alias new) hardware's JEDEC ID. ID only, not chip emulation.
+//                       Default: not set, the engine's own ID, unchanged from before.
 //   --seconds N         emulated seconds to watch (default 3)
 //   --clock MHZ         emulated CPU clock (default 100)
 //   --expect VERDICT    booted (default) | crashed | blank | display-lost
@@ -30,7 +33,7 @@ function usage(message) {
 
 const argv = process.argv.slice(2);
 const opts = { corrupt: [] };
-const valued = { "--package": "package", "--fw": "fw", "--flash": "flash", "--seconds": "seconds", "--clock": "clock", "--expect": "expect", "--save-flash": "saveFlash" };
+const valued = { "--package": "package", "--fw": "fw", "--flash": "flash", "--seconds": "seconds", "--clock": "clock", "--expect": "expect", "--save-flash": "saveFlash", "--flash-id": "flashId" };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--json") opts.json = true;
@@ -57,7 +60,7 @@ try {
   const pkg = new Uint8Array(readFileSync(packagePath));
   let sectors = opts.flash ? unpackRecords(new Uint8Array(readFileSync(resolve(opts.flash)))) : [];
   if (opts.corrupt.length) sectors = mergeSectors(sectors, corruptedSectors(engine, pkg, opts.corrupt, { mhz }));
-  const machine = Fm1Machine.boot(engine, pkg, { mhz, sectors });
+  const machine = Fm1Machine.boot(engine, pkg, { mhz, sectors, flashId: opts.flashId ?? null });
   const report = watch(machine, { seconds });
   const changed = machine.changedSectors();
   if (opts.saveFlash) writeFileSync(resolve(opts.saveFlash), packRecords(changed));
@@ -65,7 +68,9 @@ try {
   result = {
     engine: { name: engine.name, wasmSha256: engine.wasmSha256, capabilities: engine.capabilities },
     package: { path: packagePath, sha256: createHash("sha256").update(pkg).digest("hex") },
-    options: { seconds, mhz, corrupt: opts.corrupt, flashFile: opts.flash ?? null },
+    options: { seconds, mhz, corrupt: opts.corrupt, flashFile: opts.flash ?? null, ...(opts.flashId ? { flashId: opts.flashId } : {}) },
+    // only present when --flash-id was given (so default output is unchanged): { method, address, previous, current, name }
+    ...(opts.flashId ? { flashId: machine.flashIdInfo } : {}),
     expected: expect,
     pass: report.verdict === expect,
     ...summary,
@@ -84,6 +89,7 @@ else {
   const f = result.final;
   console.log(`${result.pass ? "PASS" : "FAIL"}  verdict=${result.verdict} (expected ${expect})  after ${f.audioMs} ms of audio time (engine clock ${result.emulatedMs} ms)`);
   console.log(`  screen: ${f.lcdColours} colours, ${result.activity.screenChanges} changes | audio peak ${result.activity.audioPeak.toFixed(3)} | flash changes by firmware ${result.activity.flashChanges}`);
+  if (result.flashId) console.log(`  flash ID: ${result.flashId.name} (${result.flashId.current.map((b) => b.toString(16).padStart(2, "0")).join(" ")}), ID selection only`);
   if (result.haltedAtMs !== null) console.log(`  CPU halted at engine clock ${result.haltedAtMs} ms`);
   console.log(`  flash sectors differing from the package: ${result.flash.changedSectors.length ? result.flash.changedSectors.join(" ") : "none"}`);
 }

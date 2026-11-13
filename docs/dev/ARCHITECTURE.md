@@ -19,6 +19,13 @@ Evidence tags: **[V]** verified in source or by running it; **[U]** uncertain.
 - The fork's wasm contains the path `crates\fm1-soc\src\spiflash.rs` **[V]**, but is **not** a build of upstream master: it lacks `fm1_cpu1_fault`, `fm1_cpu1_survives`, `fm1_lcd_timed`, `fm1_jit_selftest` and has extras (`fm1_usb_plug`, `fm1_audio_in`, `fm1_skin`, `fm1_has_usr`, ...) **[V]**. The author's public repos contain no engine source; `tools/sync-emulator-mirror.ps1` mentions a private repo **[V]**.
 - Therefore never assume upstream is a drop-in replacement.
 
+## Flash-chip structure in the fork's engine memory (validated 2026-11-13, engine sha256 `cdf039104a74...0278`)
+- The engine keeps **3 copies** of its flash-chip structure in linear memory **[V]**. Each starts with a pointer to the flash bytes (`fm1_flash()`) and holds the 3 JEDEC ID bytes **48 bytes after that pointer**. The same offsets in all 3; identical across the 6 firmware checked.
+- **One copy is live, two are stale** leftovers (probably from Rust moving the structure; the cause is not verified). Absolute addresses depend on the heap, so never hard-code them. Liveness is proven at runtime: the live copy has the revision word at **+36**; writing a sentinel there makes the engine's own `fm1_flash_revision()` return it (note: the export returns a signed i32; compare unsigned) **[V]**.
+- Patching only the stale copies changes nothing; patching only the live copy equals patching all three **[V]** (selftest). Changing the live ID changes firmware behaviour: `quadro-fm1` stops writing flash on `B3 60 14`, AURORA's screen changes **[V]**.
+- The firmware's behaviour on the new ID is consistent with `docs/Recovery.md` (older firmware keeps saves in RAM on the newer chip). The chip's other behaviour is unchanged: ID selection is not chip emulation **[V]**.
+- Layout is build-specific; `engine.mjs` `FLASH_ID_LAYOUTS` lists validated hashes. A different engine build is refused.
+
 ## Headless harness (`ci/machine/`)
 ```
 cli.mjs / selftest.mjs
@@ -29,3 +36,4 @@ cli.mjs / selftest.mjs
 - Capabilities come from the engine's exports; a test needing a missing one throws (`requires()`).
 - Flash record format = engine restore format = app save format: 4-byte LE offset + 4096 bytes. Restore works only before the first render **[V]**.
 - Two clocks: `audioMs` (harness) and `emulatedMs` (engine, runs ahead through idle skipping) **[V]**.
+- `flashid.mjs` (Component 2): `parseFlashId`, `locateLiveFlashId` (finds candidates from the flash pointer, proves the live one, refuses on any mismatch), `applyFlashId`, `readFlashId`. Used by `Fm1Machine.boot({ flashId })`, `machine.flashId()`, `powerCycle()` (the choice persists) and the CLI `--flash-id`. FM-1 board only, before the first instruction runs.

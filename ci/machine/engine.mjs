@@ -19,6 +19,15 @@ export const EMULATOR_DIR = resolve(here, "../../site/emulator");
 const asModule = (file) =>
   import(`data:text/javascript;base64,${readFileSync(resolve(EMULATOR_DIR, file)).toString("base64")}`);
 
+// Engine builds whose in-memory chip-structure layout has been validated for flashid.mjs, keyed by the
+// full sha256 of the .wasm. Anything else gets no flash-ID support (it fails safe, never guesses).
+// Validated 2026-11-13 on Windows/Node 24 by probing (see docs/dev/ARCHITECTURE.md): the engine keeps 3
+// copies of its chip structure (1 live, 2 stale), each with the 3 ID bytes 48 bytes after the pointer to
+// the flash memory (fm1_flash()).
+export const FLASH_ID_LAYOUTS = {
+  cdf039104a7445b01ae8de062cc67a2967ea39a8abc2d268e44beb0825370278: { jedecOffsetFromFlashPtr: 48, searchWindow: 256, copies: 3 },
+};
+
 export async function loadEngine({ wasmPath = resolve(EMULATOR_DIR, "fm1_web.wasm"), name = "fm1_web.wasm" } = {}) {
   const bytes = readFileSync(wasmPath);
   const module = new WebAssembly.Module(bytes);
@@ -26,11 +35,14 @@ export async function loadEngine({ wasmPath = resolve(EMULATOR_DIR, "fm1_web.was
   const { applyPackageResources } = await asModule("package-resources.js");
   const exportNames = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
   const has = (...names) => names.every((n) => exportNames.has(n));
+  const wasmSha256 = createHash("sha256").update(bytes).digest("hex");
+  const flashIdLayout = has("fm1_flash", "fm1_flash_len", "fm1_flash_revision", "fm1_xip") ? FLASH_ID_LAYOUTS[wasmSha256] ?? null : null;
   return {
     name,
     wasmPath,
-    wasmSha256: createHash("sha256").update(bytes).digest("hex"),
+    wasmSha256,
     exportNames,
+    flashIdLayout,
     // What this engine can do, found by looking at its exports (never assumed).
     capabilities: {
       boot: has("fm1_boot_fwsc", "fm1_alloc", "fm1_render", "fm1_halted"),
@@ -44,7 +56,8 @@ export async function loadEngine({ wasmPath = resolve(EMULATOR_DIR, "fm1_web.was
       // Not exposed by the engine in this repository, nor by the upstream source we read
       // (spiflash.rs keeps the ID in a Rust field; its power-cut switch is a native environment
       // variable). They stay false until an engine exports them.
-      selectFlashId: has("fm1_flash_id_set"),
+      selectFlashId: has("fm1_flash_id_set"),          // native: an engine export (none yet)
+      flashIdPatch: flashIdLayout !== null,           // runtime patch on a validated build (flashid.mjs)
       flashFaultInjection: has("fm1_flash_fault"),
       resetCounter: has("fm1_resets"),
     },

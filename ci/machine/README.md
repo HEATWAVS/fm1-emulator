@@ -26,6 +26,28 @@ test: build/fw.fwsc
 	node $(FM1_EMU)/ci/machine/cli.mjs --package $< --seconds 5 --corrupt erase:0x20000 --expect crashed
 ```
 
+## Choosing the flash chip ID (older vs newer hardware)
+
+```bash
+node ci/machine/cli.mjs --fw quadro-fm1 --seconds 4 --flash-id old    # Puya P25Q80, 85 60 14 (the default)
+node ci/machine/cli.mjs --fw quadro-fm1 --seconds 4 --flash-id new    # UC25HQ80,  B3 60 14
+```
+
+In code: `Fm1Machine.boot(engine, pkg, { flashId: "puya" | "uc25hq80" })`; `machine.flashId()` reads it
+back; `powerCycle()` keeps it (or `powerCycle({ flashId: ... })` swaps the chip while "off").
+
+**This selects the ID only, it is not chip emulation.** Only the 3 bytes a firmware gets from a JEDEC
+read change; timing, status bits, other commands and protection are unchanged. Firmware that checks
+the ID does react (for example `quadro-fm1` stops writing flash on the newer ID).
+
+How it stays safe: it patches the engine's memory (the engine file is never modified), only for an engine
+build whose layout was validated (`FLASH_ID_LAYOUTS` in `engine.mjs`, keyed by the .wasm sha256), only on
+the FM-1 board, only before the firmware runs. It finds the live copy of the engine's chip structure and
+proves it with the engine's own `fm1_flash_revision` before writing; on any mismatch it refuses and leaves
+memory untouched (`FlashIdError`: `unsupported-engine`, `layout-mismatch`, `no-live-copy`, `ambiguous`,
+`unsupported-board`, `invalid-id`). Without the option nothing is touched. A rebuilt engine must be
+re-validated before its hash is added.
+
 ## Pieces
 
 | File | Role |
@@ -54,7 +76,8 @@ can be far ahead because the engine skips time while the firmware idles. Use `au
 
 Recorded as capabilities and `KNOWN LIMITATION` self-tests, so nothing passes by silently not testing:
 
-- Select or read the **flash JEDEC ID** (old `0x856014` vs new `0xB36014`).
+- Model the **UC25HQ80's other behaviour** (only its ID is selectable, see above), or select an ID
+  natively through an engine export (none exists yet).
 - **Fault injection** inside the flash chip (power cut mid-write, failed write, stuck busy).
 - Count **watchdog/chip resets**.
 - **Bricking**: the boot ROM/loader is not emulated; corrupting the boot area (`0x0`) or the chip-key
