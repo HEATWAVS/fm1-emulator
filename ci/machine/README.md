@@ -49,6 +49,14 @@ memory untouched (`FlashIdError`: `unsupported-engine`, `layout-mismatch`, `no-l
 `unsupported-board`, `invalid-id`). Without the option nothing is touched. A rebuilt engine must be
 re-validated before its hash is added.
 
+## Flash-chip reference model (datasheet oracle, not part of the running emulator)
+
+`chipspec.mjs` + `chipmodel.mjs` model the Puya P25Q80H (documented reference profile; the physical older chip's
+variant is unresolved) and the UC25HQ80 from their datasheets, every behaviour cited by page and section. Time is a
+caller-supplied clock; timing is typical (default) or maximum. Where the datasheets are silent or contradict themselves it
+throws `UnspecifiedBehavior` instead of guessing. Tests: `node ci/machine/chiptests.mjs` (also in the quick tier).
+Research, sources and the list of ambiguities: `docs/dev/FLASH-CHIPS.md`.
+
 ## Pieces
 
 | File | Role |
@@ -58,7 +66,8 @@ re-validated before its hash is added.
 | `flash.mjs` | Sector records, diffs, corruption (`zero`, `erase`, `flip`) |
 | `monitor.mjs` | `watch()`: runs and judges: `booted` / `crashed` / `blank` / `display-lost` |
 | `cli.mjs` | Command line; JSON output with `--json` |
-| `selftest.mjs` | Checks the harness itself against bundled firmware |
+| `selftest.mjs` | Checks the harness itself against bundled firmware (and runs the chip-model tests) |
+| `chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs` | Flash-chip reference model and its 75 conformance tests |
 
 Flash files (`--flash`, `--save-flash`) use the same record format the app saves: per 4 KiB sector,
 a 4-byte little-endian offset then the 4096 bytes. A test can therefore run a firmware, save what it
@@ -77,8 +86,8 @@ can be far ahead because the engine skips time while the firmware idles. Use `au
 
 Recorded as capabilities and `KNOWN LIMITATION` self-tests, so nothing passes by silently not testing:
 
-- Model the **UC25HQ80's other behaviour** (only its ID is selectable, see above), or select an ID
-  natively through an engine export (none exists yet).
+- Make the running engine behave like either chip beyond its ID (timing, status/protection, page wrap): that
+  is specified by the reference model below but is not an engine feature. No native ID-select export exists yet.
 - **Fault injection** inside the flash chip (power cut mid-write, failed write, stuck busy).
 - Count **watchdog/chip resets**.
 - **Bricking**: the boot ROM/loader is not emulated; corrupting the boot area (`0x0`) or the chip-key
@@ -95,8 +104,8 @@ code sector halts the CPU (see `selftest.mjs`).
 | Command | What runs | Time |
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
-| `npm run test:machine:quick` | quick tier alone (19 tests, including one real Felucca boot) | ~5 s |
-| `npm run test:machine` | full tier: every test (30), including the slower firmware-behaviour checks | ~90 s |
+| `npm run test:machine:quick` | quick tier alone (94 tests: 19 harness incl. one real Felucca boot + 75 chip-model) | ~5 s |
+| `npm run test:machine` | full tier: every test (105 = 30 harness + 75 chip-model), including the slower firmware-behaviour checks | ~90 s |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the
 quick tier is a subset. The full tier is not run by `npm test` or CI; it is validated on Windows (Node 24 and

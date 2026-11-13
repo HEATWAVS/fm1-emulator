@@ -37,3 +37,13 @@ cli.mjs / selftest.mjs
 - Flash record format = engine restore format = app save format: 4-byte LE offset + 4096 bytes. Restore works only before the first render **[V]**.
 - Two clocks: `audioMs` (harness) and `emulatedMs` (engine, runs ahead through idle skipping) **[V]**.
 - `flashid.mjs` (Component 2): `parseFlashId`, `locateLiveFlashId` (finds candidates from the flash pointer, proves the live one, refuses on any mismatch), `applyFlashId`, `readFlashId`. Used by `Fm1Machine.boot({ flashId })`, `machine.flashId()`, `powerCycle()` (the choice persists) and the CLI `--flash-id`. FM-1 board only, before the first instruction runs.
+
+## Flash-chip reference model (Component 4 Stage A; `ci/machine/chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs`)
+```
+chipspec.mjs   datasheet data: profiles (puya, uc25hq80), timing, block-protect tables, BEHAVIORS registry + citations
+chipmodel.mjs  ChipModel: transact(tx, {read, partialBits}) -> {outcome, out, unknown}; readStatus(); peek(); powerCycle(); ManualClock
+chiptests.mjs  75 conformance tests (expected values typed from the datasheets, incl. all 64 chip-erase combinations per profile and both printed protection tables) + traceability check
+```
+- **Not connected to the engine or the harness machine.** Pure JS; one chip-select transaction at a time; time from a caller-supplied clock; completion at start + typical (or maximum) duration.
+- Modelled: WREN/WRDI, RDSR (05h/35h, 16-bit status), WRSR, page program (wrap, last-256, AND), page/sector/32K/64K/chip erase, 9Fh, reads 03h/0Bh, BP/CMP/SRP protection, WEL/WIP rules, power cycle. Chip erase: Puya runs it when the table says nothing is protected (p.24, p.38); the UC25HQ80 refuses the 14 BP/CMP combinations where its p.9 and p.28 statements conflict. Everything else throws `NotModeled`; anything the datasheets leave open throws `UnspecifiedBehavior` or is flagged in the `unknown` mask (FLASH-CHIPS.md).
+- Profile IDs equal the harness's selectable flash IDs (`flashid.mjs` FLASH_IDS), tested.

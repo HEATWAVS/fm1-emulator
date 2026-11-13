@@ -11,6 +11,9 @@
 // only its fast memory check in the quick tier and the whole test, with its slower run, in the full tier.
 // Success prints "PASS: N machine tests (quick|full)", the line ci/verify.mjs checks for.
 //
+// The flash-chip reference model's conformance tests (chiptests.mjs, pure JavaScript, milliseconds, no engine)
+// are registered here too, all in the quick tier. They test the datasheet model, not the running emulator.
+//
 // Tests marked KNOWN LIMITATION record what this engine does NOT model. They pass while the
 // limitation is real; if an engine ever starts modelling the thing, they fail and tell you the
 // harness can now test it.
@@ -23,6 +26,7 @@ import { Fm1Machine, BootError, corruptedSectors, requires } from "./machine.mjs
 import { FlashIdError, FLASH_IDS, parseFlashId, locateLiveFlashId, applyFlashId } from "./flashid.mjs";
 import { watch } from "./monitor.mjs";
 import { FLASH_SIZE, SECTOR, packRecords, unpackRecords, parseCorruption, corruptSectors, diffSectors } from "./flash.mjs";
+import { registerChipTests } from "./chiptests.mjs";
 
 const engine = await loadEngine();
 const fw = (name) => new Uint8Array(readFileSync(resolve(EMULATOR_DIR, "../fw", name)));
@@ -334,6 +338,8 @@ test("flash ID: CLI default output is unchanged; the option and invalid IDs beha
   const bad = cli("--fw", "felucca", "--flash-id", "0xdeadbe");
   assert.equal(bad.status, 2); assert.match(bad.stderr, /unsupported flash ID/);
 });
+
+registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance), quick tier
 
 const selected = QUICK_ONLY ? tests.filter((t) => t.quick) : tests;
 const tier = QUICK_ONLY ? "quick" : "full";
