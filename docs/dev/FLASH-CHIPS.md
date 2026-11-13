@@ -115,6 +115,8 @@ answers `FF` and counts it; it does not invent a unique ID. Consequences: (1) qu
 profile run does **not** reproduce the WiFi MAC / BLE name that the original model's fake `FM1-` pattern (`46 4D 31 2D` repeated) produced; (2) to model `4Bh`, read the two
 datasheets' Read Unique ID sections first (a Stage A extension).
 
+**Attribution (Stage C4).** The 4Bh answer is the only chip behaviour that changes quadro-fm1's and fm1-field's flash content between legacy and the Puya profile: a throwaway scratch engine returning the original `FM1-` pattern for `4Bh` made both firmware's flash identical to legacy (fm1-field's three extra writes disappear). So under a profile these firmware take their no-unique-ID path (fm1-field then stores generated data). FF is **not** equivalent to the `FM1-` pattern.
+
 ## What real firmware does (AURORA fm1_flash.h)
 
 Uses only `9F`, `05`, `35` (diagnostic), `06`, `20`, `02`, `0B`. Sequence: `WREN`; read status and require WEL (else error); erase or

@@ -29,6 +29,7 @@ import { watch } from "./monitor.mjs";
 import { FLASH_SIZE, SECTOR, packRecords, unpackRecords, parseCorruption, corruptSectors, diffSectors } from "./flash.mjs";
 import { registerChipTests } from "./chiptests.mjs";
 import { registerLiveChipTests } from "./chiplivetests.mjs";
+import { registerFirmwareTests } from "./firmwaretests.mjs";
 import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
@@ -584,6 +585,7 @@ test.chip("flash chip (live): a power cycle keeps the profile; options are still
 });
 
 registerLiveChipTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // live chip conformance (Stage C3), full tier, needs the chip engine
+registerFirmwareTests(test.chip, { chipEngine, catalogPkg });   // firmware behaviour under the profiles (Stage C4), full tier, needs the chip engine
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance), quick tier
 
 const inTier = (QUICK_ONLY ? tests.filter((t) => t.quick) : tests).filter((t) => !FILTER || t.name.includes(FILTER));
