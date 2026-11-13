@@ -64,6 +64,10 @@ export async function loadEngine({ wasmPath = resolve(EMULATOR_DIR, "fm1_web.was
       selectFlashChip: has("fm1_flash_chip", "fm1_flash_timing"),
       flashWip: has("fm1_flash_wip"),
       flashEvents: has("fm1_flash_events"),
+      // the chip's non-volatile status bits across a power cycle; and test-only hooks that drive the SoC bus (SPI0, chip select, the
+      // cycle counter) without running firmware, used by the live chip conformance tests (never in the shipped engine)
+      flashNv: has("fm1_flash_nv_status", "fm1_flash_nv_restore"),
+      testBus: has("fm1_test_bus_write32", "fm1_test_bus_read32", "fm1_test_advance_us", "fm1_test_set_wp"),
       resetCounter: has("fm1_resets"),
     },
     instantiate() {

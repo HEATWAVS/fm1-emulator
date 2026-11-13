@@ -23,8 +23,8 @@ engine build is now Stage 4B, fault injection is Component 5, scenario tests 6, 
 | C0 | Read-only clock investigation: can the chip's WIP timing use the SoC cycle counter? | **Done**: yes (ARCHITECTURE.md, "Chip-profile engine") | |
 | C1 | Port the chip model into the isolated engine (`spichip.rs`) behind a profile switch, default = original behaviour; oracle transcripts replayed by Rust host tests | **Done** (patch `ci/engine/chip-profiles.patch`) | |
 | C2 | Integration: reproducible build script + pins, tables generated from `chipspec.mjs`, harness options `flashChip`/`flashTiming`, CLI `--flash-chip`/`--flash-timing`/`--engine`, tests, docs (this was old 4D) | **Done** (see `git log`) | |
-| C3 | Conformance and failure-scenario tests against the live chip-profile engine (WEL gating, page wrap, protection, erase, WIP polling duration, rejected writes, unspecified-behaviour counters) | Proposed | C2 |
-| C4 | Firmware behaviour tests under each profile (AURORA/quadro-fm1/Felucca...), incl. host cost of long WIP polls | Proposed | C3 |
+| C3 | Live conformance and failure tests against the chip-profile engine for both profiles (WEL, page wrap, protection/SRP, all erases, WIP and timing, rejected writes, status and power-cycle persistence, legacy regression, oracle replay), plus the `4Bh` investigation | **Done** (see `git log`; 42 live tests, 24 mutation controls caught) | |
+| C4 | Firmware behaviour tests under each profile (AURORA/quadro-fm1/Felucca...), incl. host cost of long WIP polls | Proposed, **not started** | C3 |
 | 5 | Flash fault injection (power cut at op N, failed write, bit flips, stuck busy; mid-cycle array state, which the chip-profile engine simplifies, see D33) | Proposed | C3; upstream `spiflash.rs` power-cut code is the starting point |
 | 6 | Scenario/recovery tests (failed update, corrupted flash, reset recovery) in `npm test` | Proposed | 5 |
 | 7 | Boot-area / brick emulation | Research only | Boot ROM + loader behaviour, probably not public |

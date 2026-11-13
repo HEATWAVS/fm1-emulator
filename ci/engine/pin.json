@@ -8,7 +8,7 @@
   },
   "patch": {
     "file": "chip-profiles.patch",
-    "sha256": "2038e078fce718d3ac37a9ffdfdee8f7d7cddb6a38b756c92ef744d5826693e4",
+    "sha256": "3ea9594a53a59729959d77d19144a077ba9d03a5dba78ac195d4c1f6b0ffd345",
     "note": "applies to the LF blobs of the pinned commit with core.autocrlf=false"
   },
   "generatedTablesSha256": "5d24d3674947d8ef5687f365bf79e89daa5fa8f8a50fdc5ccf4c0c6618142176",
@@ -61,8 +61,8 @@
     "rustc 1.97.1 (8bab26f4f 2026-07-14)": {
       "host": "x86_64-pc-windows-msvc",
       "unpatchedWasmSha256": "943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe",
-      "patchedWasmSha256": "acf09d9498b35f951c011928e87f2528f78431eb46ca98d9c0e20a4ce2f0d9fa",
-      "patchedWasmBytes": 2719859
+      "patchedWasmSha256": "159acffe97a0942b16d4c1da12c3d1d9f92c5de1abb678287af48513bd21a926",
+      "patchedWasmBytes": 2721296
     }
   },
   "expectedExports": [
@@ -81,6 +81,8 @@
     "fm1_flash_chip",
     "fm1_flash_events",
     "fm1_flash_len",
+    "fm1_flash_nv_restore",
+    "fm1_flash_nv_status",
     "fm1_flash_restore",
     "fm1_flash_revision",
     "fm1_flash_timing",
@@ -103,6 +105,10 @@
     "fm1_profile",
     "fm1_profile_report",
     "fm1_render",
+    "fm1_test_advance_us",
+    "fm1_test_bus_read32",
+    "fm1_test_bus_write32",
+    "fm1_test_set_wp",
     "fm1_velocity",
     "fm1_xip",
     "fm1_xip_len",
@@ -122,10 +128,22 @@
   "addedExports": [
     "fm1_flash_chip",
     "fm1_flash_events",
+    "fm1_flash_nv_restore",
+    "fm1_flash_nv_status",
     "fm1_flash_timing",
-    "fm1_flash_wip"
+    "fm1_flash_wip",
+    "fm1_test_advance_us",
+    "fm1_test_bus_read32",
+    "fm1_test_bus_write32",
+    "fm1_test_set_wp"
   ],
   "expectedImports": [
     "env.fm1_jit_compile"
+  ],
+  "testHooks": [
+    "fm1_test_advance_us",
+    "fm1_test_bus_read32",
+    "fm1_test_bus_write32",
+    "fm1_test_set_wp"
   ]
 }

@@ -28,6 +28,7 @@ import { FlashIdError, FLASH_IDS, parseFlashId, locateLiveFlashId, applyFlashId 
 import { watch } from "./monitor.mjs";
 import { FLASH_SIZE, SECTOR, packRecords, unpackRecords, parseCorruption, corruptSectors, diffSectors } from "./flash.mjs";
 import { registerChipTests } from "./chiptests.mjs";
+import { registerLiveChipTests } from "./chiplivetests.mjs";
 import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
@@ -44,7 +45,8 @@ const MELODEE = fw("melodee-1.6.1.fwsc");
 const hex = (n) => `0x${n.toString(16)}`;
 
 const args = process.argv.slice(2);
-if (args.some((a) => a !== "--quick")) { console.error("usage: node ci/machine/selftest.mjs [--quick]"); process.exit(2); }
+const FILTER = args.includes("--filter") ? args[args.indexOf("--filter") + 1] : null;      // run only tests whose name contains this text (used for mutation controls)
+if (args.some((a, i) => a !== "--quick" && a !== "--filter" && args[i - 1] !== "--filter") || (args.includes("--filter") && !FILTER)) { console.error("usage: node ci/machine/selftest.mjs [--quick] [--filter TEXT]"); process.exit(2); }
 const QUICK_ONLY = args.includes("--quick");
 
 const tests = [];
@@ -356,15 +358,17 @@ test("flash ID: CLI default output is unchanged; the option and invalid IDs beha
 // record the calls the harness makes); the live tests at the end need the engine built by ci/engine/build.mjs.
 const chipCode = (c) => (e) => e instanceof FlashChipError && e.code === c;
 /** The shipped engine with the chip exports stubbed: records every call, so order and arguments can be checked. */
-function stubChipEngine(calls, { board = 0, chipRc = 0, timingRc = 0 } = {}) {
+function stubChipEngine(calls, { board = 0, chipRc = 0, timingRc = 0, nv = null } = {}) {
   return {
     ...engine, name: "stub-chip-engine",
-    capabilities: { ...engine.capabilities, selectFlashChip: true },
+    capabilities: { ...engine.capabilities, selectFlashChip: true, flashNv: nv !== null },
     instantiate: () => {
       const real = engine.instantiate();
       return { ...real, fm1_board: () => board,
         fm1_flash_chip: (id) => { calls.push(["chip", id]); return chipRc; },
         fm1_flash_timing: (mode) => { calls.push(["timing", mode]); return timingRc; },
+        fm1_flash_nv_status: () => nv,
+        fm1_flash_nv_restore: (v) => { calls.push(["nv", v]); return 0; },
         fm1_render: (...a) => { calls.push(["render"]); return real.fm1_render(...a); } };
     },
   };
@@ -459,12 +463,45 @@ test.quick("flash chip: a power cycle keeps the chip and timing; they can be swa
   assert.throws(() => m.powerCycle({ flashChip: null }), chipCode("timing-needs-chip"), "timing without a chip is refused here too");
 });
 
+test.quick("flash chip: flashNvStatus is validated, needs a chip profile and an engine that can restore it, and is applied right after the profile", () => {
+  const calls = [], eng = stubChipEngine(calls, { nv: 0 });
+  for (const bad of [-1, 1.5, 2 ** 32, "0", NaN, {}]) assert.throws(() => Fm1Machine.boot(eng, FELUCCA, { flashChip: "puya", flashNvStatus: bad }), chipCode("invalid-nv-status"), String(bad));
+  assert.throws(() => Fm1Machine.boot(eng, FELUCCA, { flashNvStatus: 5 }), chipCode("nv-needs-chip"));
+  assert.throws(() => Fm1Machine.boot(eng, FELUCCA, { flashChip: "legacy", flashNvStatus: 5 }), chipCode("nv-needs-chip"));
+  assert.throws(() => Fm1Machine.boot(stubChipEngine([]), FELUCCA, { flashChip: "puya", flashNvStatus: 5 }), chipCode("unsupported-engine"), "an engine without the flashNv capability");
+  assert.deepEqual(calls, [], "nothing was selected for any refused request");
+  const m = Fm1Machine.boot(eng, FELUCCA, { flashChip: "uc25hq80", flashTiming: "maximum", flashNvStatus: 0x40001234 });
+  assert.deepEqual(calls, [["chip", 2], ["timing", 1], ["nv", 0x40001234]]);
+  assert.ok(!("flashNvStatus" in m.options), "not stored: a later power cycle takes the live value");
+});
+
+test.quick("flash chip: a power cycle carries the chip's non-volatile status for the same chip only; an override wins; legacy and swapped chips carry nothing", () => {
+  const calls = [], eng = stubChipEngine(calls, { nv: 0x00004a84 });
+  const m = Fm1Machine.boot(eng, FELUCCA, { flashChip: "puya" });
+  const nvCalls = () => calls.filter((c) => c[0] === "nv");
+  m.powerCycle();
+  assert.deepEqual(nvCalls(), [["nv", 0x4a84]], "the live status was read and restored");
+  m.powerCycle({ flashChip: "puya", flashTiming: "maximum" });
+  assert.deepEqual(nvCalls().length, 2, "same chip, new timing: still carried");
+  m.powerCycle({ flashChip: "uc25hq80" });
+  assert.deepEqual(nvCalls().length, 2, "a different chip swapped in while off starts fresh");
+  m.powerCycle({ flashChip: "old" });
+  assert.deepEqual(nvCalls().length, 3, "aliases count as the same chip");
+  m.powerCycle({ flashNvStatus: 7 });
+  assert.deepEqual(nvCalls().at(-1), ["nv", 7], "an explicit value wins");
+  const before = calls.length;
+  Fm1Machine.boot(eng, FELUCCA).powerCycle();
+  assert.deepEqual(calls.slice(before), calls.slice(before).filter((c) => c[0] === "render"), "legacy: no chip call of any kind");
+  const plain = Fm1Machine.boot(stubChipEngine([]), FELUCCA, { flashChip: "puya" });
+  assert.doesNotThrow(() => plain.powerCycle(), "an engine without the flashNv capability just boots the chip fresh (as before)");
+});
+
 test.quick("chip engine pin: the patch and the tables generated from chipspec.mjs are the ones the pin records (one source of truth)", () => {
   const sha = (b) => createHash("sha256").update(b).digest("hex");
   assert.equal(sha(readFileSync(resolve(import.meta.dirname, "../engine", PIN.patch.file))), PIN.patch.sha256, "ci/engine/chip-profiles.patch changed: update pin.json deliberately");
   assert.equal(sha(renderTables()), PIN.generatedTablesSha256, "chipspec.mjs changed: rebuild the engine (node ci/engine/build.mjs --test) and update pin.json");
   assert.equal(PIN.upstream.commit, "631b790b191e87ea8b796d351cfe7e61ab366794");
-  assert.equal(PIN.expectedExports.length, 52);
+  assert.equal(PIN.expectedExports.length, 58);
   for (const n of PIN.addedExports) assert.ok(PIN.expectedExports.includes(n), n);
   assert.ok(!engine.exportNames.has("fm1_flash_chip"), "the shipped engine was not replaced");
 });
@@ -533,7 +570,7 @@ test.chip("flash chip (live): WIP is its own export (never set by the legacy mod
   assert.ok(typ.wip > 0, "a flash cycle was seen in progress under the Puya profile");
   assert.ok(max.wip > typ.wip, `maximum timing holds WIP longer: ${typ.wip} -> ${max.wip} samples`);
   assert.equal(again.wip, max.wip, "deterministic");
-  assert.deepEqual(typ.m.flashEvents(), { unspecified: 0, notModeled: 1 }, "quadro-fm1 issues one opcode the model does not cover; it is counted, not guessed");
+  assert.deepEqual(typ.m.flashEvents(), { unspecified: 0, notModeled: 1, lastNotModeled: 0x4b }, "quadro-fm1 reads the unique ID (4Bh) once, which the model does not cover; it is counted, not guessed");
 });
 
 test.chip("flash chip (live): a power cycle keeps the profile; options are still validated on the chip engine", () => {
@@ -546,9 +583,10 @@ test.chip("flash chip (live): a power cycle keeps the profile; options are still
   assert.equal(chipEngine.exportNames.has("fm1_flash_busy"), true, "the chip-select busy export is still there, unchanged");
 });
 
+registerLiveChipTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // live chip conformance (Stage C3), full tier, needs the chip engine
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance), quick tier
 
-const inTier = QUICK_ONLY ? tests.filter((t) => t.quick) : tests;
+const inTier = (QUICK_ONLY ? tests.filter((t) => t.quick) : tests).filter((t) => !FILTER || t.name.includes(FILTER));
 const skipped = inTier.filter((t) => t.needsChipEngine && !chipEngine);
 const selected = inTier.filter((t) => !skipped.includes(t));
 const tier = QUICK_ONLY ? "quick" : "full";

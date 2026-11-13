@@ -36,10 +36,10 @@ index b342349..426523d 100644
              }
 diff --git a/crates/fm1-soc/src/spichip.rs b/crates/fm1-soc/src/spichip.rs
 new file mode 100644
-index 0000000..1d8239d
+index 0000000..adcd3e1
 --- /dev/null
 +++ b/crates/fm1-soc/src/spichip.rs
-@@ -0,0 +1,710 @@
+@@ -0,0 +1,758 @@
 +//! Datasheet-based SPI NOR chip state machine (HEATWAVS Stage C1), used by `SpiFlash` when a
 +//! chip profile is selected. The default (no profile) is the original instantaneous model.
 +//!
@@ -108,6 +108,8 @@ index 0000000..1d8239d
 +    pub unspecified: u32,
 +    /// opcodes outside the modelled set (answered with 0xFF, no state change)
 +    pub not_modeled: u32,
++    /// the most recent opcode counted in `not_modeled` (0 if none)
++    pub last_not_modeled: u8,
 +    /// ids of the most recent events (behaviour ids from chipspec.mjs), oldest dropped
 +    pub log: Vec<&'static str>,
 +}
@@ -262,6 +264,31 @@ index 0000000..1d8239d
 +        self.busy.map(|b| b.end)
 +    }
 +
++    /// The non-volatile status bits (SRP0/1, BP4-BP0, QE, LB3-1, CMP) as they will be once any running cycle ends, packed
++    /// `value | unknown << 16` (the unknown mask carries bits the datasheet leaves open). What survives a power cycle.
++    pub fn nv_status(&mut self) -> u32 {
++        self.settle();
++        let (mut sr, mut unk) = (self.sr, self.unknown);
++        if let Some(b) = self.busy {
++            if b.kind == CycleKind::Wrsr {
++                sr = b.next_sr; // a write-status cycle in progress is treated as completing (power loss mid-cycle is not modelled)
++                unk = b.next_unknown;
++            }
++        }
++        const NV: u16 = LOW_WRITABLE | HIGH_WRITABLE;
++        ((sr & NV) as u32) | (((unk & NV) as u32) << 16)
++    }
++
++    /// Power-on of a chip that kept `packed` (from `nv_status`) while off: the non-volatile bits are restored and the
++    /// power-up rules apply (WEL clear; SRP1:SRP0 = 1:0 returns to 0:0).
++    pub fn restore_nv(&mut self, packed: u32) {
++        const NV: u16 = LOW_WRITABLE | HIGH_WRITABLE;
++        self.busy = None;
++        self.sr = (self.sr & !NV) | (packed as u16 & NV);
++        self.unknown = (self.unknown & !NV) | ((packed >> 16) as u16 & NV);
++        self.power_cycle();
++    }
++
 +    /// Power off and on: WEL clears, SRP1:SRP0 = 1:0 returns to 0:0. Not allowed mid-cycle (that is
 +    /// fault injection, not modelled): recorded and ignored.
 +    pub fn power_cycle(&mut self) {
@@ -307,6 +334,7 @@ index 0000000..1d8239d
 +                _ => "cmd.unknown",
 +            };
 +            self.event(id, false);
++            self.events.last_not_modeled = op;
 +            self.cmd = Cmd::Ignore;
 +            return;
 +        }
@@ -741,6 +769,26 @@ index 0000000..1d8239d
 +    }
 +
 +    /// Opcodes outside the model are recorded, answered 0xFF, and change nothing.
++    /// Non-volatile bits survive a power cycle through nv_status/restore_nv; WEL does not; lock-down SRP1:SRP0 = 1:0 returns to 0:0.
++    #[test]
++    fn nv_status_round_trips_across_power_off() {
++        let (mut a, mut mem) = (at(ChipKind::Puya), vec![0xff; FLASH_SIZE]);
++        xfer(&mut a, &mut mem, &[0x06], 0);
++        xfer(&mut a, &mut mem, &[0x01, 0x1c | 0x80, 0x40 | 0x02], 0); // BP2..0 (0x1c = BP2,BP1,BP0... as bits 4..2), SRP0, CMP, QE
++        a.set_clock(100_000_000, 100_000_000); // 1 s later: the cycle is long over
++        let packed = a.nv_status();
++        let mut b = at(ChipKind::Puya);
++        b.restore_nv(packed);
++        assert_eq!(b.status().0, 0x1c | 0x80 | ((0x40 | 0x02) << 8));
++        let mut c = at(ChipKind::Puya);
++        c.restore_nv(((0x100u16) as u32) | 0); // SRP1 alone = lock-down
++        assert_eq!(c.status().0, 0, "lock-down returns to 0:0 at power-up");
++        let mut d = at(ChipKind::Puya);
++        d.sr |= WEL;
++        d.restore_nv(0);
++        assert_eq!(d.status().0, 0, "WEL does not survive");
++    }
++
 +    #[test]
 +    fn unmodelled_opcodes_are_recorded() {
 +        let (mut c, mut mem) = (at(ChipKind::Uc25hq80), vec![0xff; FLASH_SIZE]);
@@ -1184,10 +1232,10 @@ index 0000000..56f7876
 +    }
 +}
 diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
-index fa2ab51..0354718 100644
+index fa2ab51..e97f62b 100644
 --- a/crates/fm1-web/src/lib.rs
 +++ b/crates/fm1-web/src/lib.rs
-@@ -263,6 +263,45 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
+@@ -263,6 +263,98 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
  pub extern "C" fn fm1_flash_revision() -> u32 { machine().map_or(0, |m| m.soc.flash.revision) }
  #[no_mangle]
  pub extern "C" fn fm1_flash_busy() -> u32 { machine().is_some_and(|m| m.soc.flash.busy()) as u32 }
@@ -1228,7 +1276,60 @@ index fa2ab51..0354718 100644
 +/// Chip events: which = 0 commands ignored as unspecified by the datasheet, 1 opcodes outside the model.
 +#[no_mangle]
 +pub extern "C" fn fm1_flash_events(which: u32) -> u32 {
-+    machine().and_then(|m| m.soc.flash.chip.as_ref()).map_or(0, |c| if which == 0 { c.events.unspecified } else { c.events.not_modeled })
++    machine().and_then(|m| m.soc.flash.chip.as_ref()).map_or(0, |c| match which {
++        0 => c.events.unspecified,
++        1 => c.events.not_modeled,
++        2 => c.events.last_not_modeled as u32, // the most recent opcode counted in 1
++        _ => 0,
++    })
++}
++/// The chip's non-volatile status bits (value | unknown mask << 16): what it keeps while the unit is off. 0 without a chip profile.
++#[no_mangle]
++pub extern "C" fn fm1_flash_nv_status() -> u32 {
++    machine().map_or(0, |m| {
++        let (c, hz) = (m.soc.periph.cycles, m.soc.periph.hz);
++        m.soc.flash.chip.as_mut().map_or(0, |chip| {
++            chip.set_clock(c, hz);
++            chip.nv_status()
++        })
++    })
++}
++/// Power-on of a chip that kept `packed` (from fm1_flash_nv_status) while off. Returns 0, or 1 without a chip profile.
++#[no_mangle]
++pub extern "C" fn fm1_flash_nv_restore(packed: u32) -> u32 {
++    machine().and_then(|m| m.soc.flash.chip.as_mut()).map_or(1, |chip| {
++        chip.restore_nv(packed);
++        0
++    })
++}
++/// TEST HOOKS (chip-profile test engine only; never in the shipped engine): drive the SoC bus the way the CPU does, with a
++/// clock the test controls, so the chip can be exercised without firmware. Not for use while the machine is being rendered.
++#[no_mangle]
++pub extern "C" fn fm1_test_bus_write32(addr: u32, value: u32) -> u32 {
++    machine().map_or(1, |m| {
++        fm1_core::Bus::write32(&mut m.soc, addr, value);
++        0
++    })
++}
++#[no_mangle]
++pub extern "C" fn fm1_test_bus_read32(addr: u32) -> u32 {
++    machine().map_or(0, |m| fm1_core::Bus::read32(&mut m.soc, addr))
++}
++/// Move the SoC cycle counter forward by `us` microseconds of emulated time.
++#[no_mangle]
++pub extern "C" fn fm1_test_advance_us(us: u32) -> u32 {
++    machine().map_or(1, |m| {
++        m.soc.periph.cycles += m.soc.periph.hz * us as u64 / 1_000_000;
++        0
++    })
++}
++/// The chip's WP# pin level (1 = high, the default). Needs a chip profile.
++#[no_mangle]
++pub extern "C" fn fm1_test_set_wp(high: u32) -> u32 {
++    machine().and_then(|m| m.soc.flash.chip.as_mut()).map_or(1, |c| {
++        c.set_wp(high != 0);
++        0
++    })
 +}
  #[no_mangle]
  pub extern "C" fn fm1_flash_restore(ptr: *mut u8, len: u32) -> u32 {

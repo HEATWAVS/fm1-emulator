@@ -97,6 +97,24 @@ chip-select rather than a 2-20 ms write cycle (observation, inferential). None o
 The chip-profile test engine (`ci/engine/`, Component 4 Stage C) closes them for the modelled commands, in a separate never-committed
 build selected with `flashChip`; see `ci/engine/README.md` for behaviour and limitations (array-at-accept, no USB host, XIP-tail difference).
 
+## The `4Bh` command quadro-fm1 issues (resolved 2026-11-13, Stage C3)
+
+Under the Puya profile quadro-fm1 1.0 triggers exactly one opcode the model does not cover: **`4Bh`, Read Unique ID**, at power-on (about 6 ms of audio time, 86 ms of
+emulated clock), before any flash write, once. Under the UC25HQ80 profile it never issues it (that package does not recognise `B3 60 14`, so it skips the unique-ID read).
+Other firmware compared (AURORA, Felucca, Melodee, coqui) never issues it. The identification is by the engine's own report (`fm1_flash_events(2)`).
+
+**Firmware context** (public source, read-only): in `charlesvestal/fm1-base` `device/main_fm1.c` (about line 1239), right after the JEDEC ID is read and accepted
+(`flash_ok = FM1B_FLASH_JEDEC_OK(id)`: `856014` or `B36014`), builds with WiFi or BLE read the part's 16-byte factory unique ID with `fl_uid_ram(flash_uid)` (opcode `4Bh`).
+`plat_chip_uid()` returns it (or 0 if the ID was not accepted) and is used for the WiFi MAC (`device/wifi.c`) and the Bluetooth name (`device/radio.c`). `wifi.c` states the
+case of "a part that does not answer 0x4B: all FF or all 0" and then falls back to the Bluetooth address. The package in the catalog (1.0) is older than the source read, so this
+is the HAL's behaviour, not a statement about that exact binary.
+
+**Is it specified by the Stage A sources? No.** Stage A cites `4Bh` only in each datasheet's command listing (Puya p.20-21 "10.1 Commands listing", UC25HQ80 p.13 Table-7):
+the command exists on both chips, but the dedicated sections (dummy bytes, ID length) were not read, so nothing about its response is specified here. Decision D42: the model
+answers `FF` and counts it; it does not invent a unique ID. Consequences: (1) quadro-fm1 and similar firmware take the documented "no unique ID" path under a profile, so a
+profile run does **not** reproduce the WiFi MAC / BLE name that the original model's fake `FM1-` pattern (`46 4D 31 2D` repeated) produced; (2) to model `4Bh`, read the two
+datasheets' Read Unique ID sections first (a Stage A extension).
+
 ## What real firmware does (AURORA fm1_flash.h)
 
 Uses only `9F`, `05`, `35` (diagnostic), `06`, `20`, `02`, `0B`. Sequence: `WREN`; read status and require WEL (else error); erase or

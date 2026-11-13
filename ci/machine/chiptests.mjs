@@ -17,11 +17,11 @@ const BYTES = 1 << 20;
 // Status register bit values (UC p8 Table-4; Puya p23 10.5).
 const S = { WIP: 0x1, WEL: 0x2, BP0: 0x4, BP1: 0x8, BP2: 0x10, BP3: 0x20, BP4: 0x40, SRP0: 0x80, SRP1: 0x100, QE: 0x200, SUS2: 0x400, LB1: 0x800, LB2: 0x1000, LB3: 0x2000, CMP: 0x4000, SUS1: 0x8000 };
 // Timing, microseconds. Puya: Table 5-4 p11 (+ Table 5-3 p10 tW). UC25HQ80: Table-18 p53 (+ Table-17.1 p53 tW).
-const TIMING = {
+export const TIMING = {
   puya: { typical: { pp: 2000, pe: 8000, se: 8000, be32: 8000, be64: 8000, ce: 8000, wrsr: 8000 }, maximum: { pp: 3000, pe: 20000, se: 20000, be32: 20000, be64: 20000, ce: 20000, wrsr: 12000 } },
   uc25hq80: { typical: { pp: 1500, pe: 7000, se: 7000, be32: 7000, be64: 7000, ce: 7000, wrsr: 8000 }, maximum: { pp: 3000, pe: 10000, se: 10000, be32: 10000, be64: 10000, ce: 10000, wrsr: 12000 } },
 };
-const MID = { puya: 0x85, uc25hq80: 0xb3 };                // Puya p50; UC Table-8.0 p14
+export const MID = { puya: 0x85, uc25hq80: 0xb3 };                // Puya p50; UC Table-8.0 p14
 const a3 = (n) => [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 const OPS = {                                              // one command of each kind, at an address inside its unit
   pp: [0x02, ...a3(0x001000), 0xaa], pe: [0x81, ...a3(0x002050)], se: [0x20, ...a3(0x00a123)],
@@ -32,7 +32,7 @@ const OPS = {                                              // one command of eac
 // The printed protected-area tables, rows in printed order: [BP4 BP3 BP2 BP1 BP0 (x = don't care), protected range or null for NONE].
 // CMP=0: UC25HQ80 Table-6.0 (p10-11), Puya Table 6-1 (p15).  CMP=1: UC25HQ80 Table-6.1 (p11), Puya Table 6-1 (p16).
 const A = 0x0fffff;
-const PRINTED = {
+export const PRINTED = {
   cmp0: [["xx000", null], ["00001", [0x0f0000, A]], ["00010", [0x0e0000, A]], ["00011", [0x0c0000, A]], ["00100", [0x080000, A]],
     ["01001", [0, 0x00ffff]], ["01010", [0, 0x01ffff]], ["01011", [0, 0x03ffff]], ["01100", [0, 0x07ffff]], ["0x101", [0, A]], ["xx11x", [0, A]],
     ["10001", [0x0ff000, A]], ["10010", [0x0fe000, A]], ["10011", [0x0fc000, A]], ["1010x", [0x0f8000, A]],
@@ -45,14 +45,14 @@ const PRINTED = {
 // BP4..BP0 combinations whose printed row says NONE is protected (hand-expanded from the row labels):
 //   CMP=0: 'x x 0 0 0' -> BP2=BP1=BP0=0, BP4 and BP3 free: 4 combinations.
 //   CMP=1: '0 x 1 0 1' -> 00101, 01101;  'x x 1 1 x' -> BP2=BP1=1, BP4/BP3/BP0 free: 00110 00111 01110 01111 10110 10111 11110 11111.
-const NONE_PROTECTED = { 0: ["00000", "01000", "10000", "11000"], 1: ["00101", "01101", "00110", "00111", "01110", "01111", "10110", "10111", "11110", "11111"] };
+export const NONE_PROTECTED = { 0: ["00000", "01000", "10000", "11000"], 1: ["00101", "01101", "00110", "00111", "01110", "01111", "10110", "10111", "11110", "11111"] };
 // Chip erase, Puya (p24, p38): "executed only if the Block Protect bits are set to 'None protected'" -> runs exactly at those 14 combinations.
-const PUYA_CE_RUNS = new Set([...NONE_PROTECTED[0].map((b) => "0:" + b), ...NONE_PROTECTED[1].map((b) => "1:" + b)]);
+export const PUYA_CE_RUNS = new Set([...NONE_PROTECTED[0].map((b) => "0:" + b), ...NONE_PROTECTED[1].map((b) => "1:" + b)]);
 // Chip erase, UC25HQ80: p9 'None protected' and p28 'ignored if one or more blocks are protected' say the same as Puya, but p28 also says
 // 'executed only if all BP bits are 0'. Runs at CMP=0 BP=00000 (all statements agree). Statements conflict at these 14 combinations:
 // the three where BP is not all 0 yet nothing is protected, the one where BP is all 0 yet everything is protected, and the ten CMP=1 NONE rows.
-const UC_CE_RUNS = new Set(["0:00000"]);
-const UC_CE_CONFLICT = new Set(["0:01000", "0:10000", "0:11000", "1:00000", ...NONE_PROTECTED[1].map((b) => "1:" + b)]);
+export const UC_CE_RUNS = new Set(["0:00000"]);
+export const UC_CE_CONFLICT = new Set(["0:01000", "0:10000", "0:11000", "1:00000", ...NONE_PROTECTED[1].map((b) => "1:" + b)]);
 const status = (cmp, bits) => parseInt(bits, 2) * 4 | (cmp ? 0x4000 : 0);          // BP4..BP0 sit at status bits 6..2; CMP is bit 14
 const ALL_COMBOS = [0, 1].flatMap((cmp) => Array.from({ length: 32 }, (_, n) => [cmp, n.toString(2).padStart(5, "0")]));
 

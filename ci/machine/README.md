@@ -60,7 +60,8 @@ node ci/machine/cli.mjs --fw felucca --engine some/other_engine.wasm --flash-chi
 
 In code: `Fm1Machine.boot(engine, pkg, { flashChip: "puya" | "uc25hq80" | "legacy", flashTiming: "typical" | "maximum" })`;
 `machine.flashChipInfo` says what was selected, `machine.flashWip()` reads the chip's WIP bit (distinct from `observe().flashBusy`,
-which is chip-select), `machine.flashEvents()` counts commands the model ignored as unspecified and opcodes outside it.
+which is chip-select), `machine.flashEvents()` counts commands the model ignored as unspecified and opcodes outside it
+(`{ unspecified, notModeled, lastNotModeled }`: the last such opcode, 0 = none).
 
 - **This is not `flashId`.** `flashId` changes the three ID bytes of the *shipped* engine by a runtime patch and nothing else.
   `flashChip` selects a datasheet-based chip model (status register, WEL, WIP, protection, page wrap, cycle timing) inside the
@@ -68,11 +69,12 @@ which is chip-select), `machine.flashEvents()` counts commands the model ignored
 - **Default = `legacy`:** the engine's original instantaneous model, no export is called, behaviour is exactly as before. Explicit
   `"legacy"` is the same. `flashTiming` needs a chip profile (`timing-needs-chip`); `typical` is its default.
 - **Before the first render, only:** the profile is selected while the machine boots (after any flash restore, before the first instruction);
-  there is no API to change the chip of a running machine. `powerCycle()` keeps it, or `powerCycle({ flashChip })` swaps it while "off"
-  (status bits such as BP/CMP are not carried over: a new machine starts with status 0).
+  there is no API to change the chip of a running machine. `powerCycle()` keeps it, or `powerCycle({ flashChip })` swaps it while "off".
+  The chip's non-volatile status bits (BP, CMP, SRP0, QE, LB) are carried over for the same chip (boot option `flashNvStatus`, passed for you; WEL is
+  not carried; lock-down SRP 1:0 returns to 0:0); a different chip swapped in starts with status 0.
 - **Refusals** (`FlashChipError`, before anything boots): `invalid-chip`, `invalid-timing`, `timing-needs-chip`, `id-conflict`,
   `unsupported-engine` (the engine lacks `fm1_flash_chip`/`fm1_flash_timing`: the shipped engine does), `unsupported-board` (not the FM-1),
-  `engine-refused`. The CLI exits 2 with the reason.
+  `engine-refused`, `invalid-nv-status`, `nv-needs-chip`. The CLI exits 2 with the reason.
 - Behaviour differences from the original model, the array-at-accept simplification and the known limitations: `ci/engine/README.md`.
 
 ## Flash-chip reference model (datasheet oracle)
@@ -132,8 +134,9 @@ code sector halts the CPU (see `selftest.mjs`).
 | Command | What runs | Time |
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
-| `npm run test:machine:quick` | quick tier alone (102 tests: 27 harness incl. one real Felucca boot + 75 chip-model) | ~6 s |
-| `npm run test:machine` | full tier: every test (119 = 44 harness + 75 chip-model), including the slower firmware-behaviour checks. 5 of them need the chip-profile engine and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 114 run | ~90 s (~140 s with the chip engine) |
+| `npm run test:machine:quick` | quick tier alone (104 tests: 29 harness incl. one real Felucca boot + 75 chip-model) | ~6 s |
+| `npm run test:machine` | full tier: every test (163 = 88 harness + 75 chip-model), including the slower firmware-behaviour checks. 47 of them need the chip-profile engine (5 chip-engine checks + 42 live chip conformance tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 116 run | ~90 s (~160 s with the chip engine) |
+| `node ci/machine/selftest.mjs --filter "chip live"` | only the live chip conformance tests (needs the chip engine) | ~9 s |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the
 quick tier is a subset. The full tier is not run by `npm test` or CI; it is validated on Windows (Node 24 and

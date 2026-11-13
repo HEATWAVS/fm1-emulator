@@ -1,6 +1,8 @@
 // Deterministic oracle transcripts: drives the Stage A reference model (ci/machine/chipmodel.mjs) through systematic and
 // seeded-random scenarios and records every result. The Rust test (fm1-soc/tests/chip_oracle.rs) replays them.
-// Usage: node ci/engine/gen-transcripts.mjs <out.txt>   (deterministic: the same file every run; used by build.mjs --test)
+// Usage: node ci/engine/gen-transcripts.mjs <out.txt> [--no-partial]   (deterministic: the same file every run; used by build.mjs --test)
+// --no-partial: every transaction ends on a byte boundary (what the machine's byte-wide SPI0 can do); the oracle's answers are recomputed for it.
+// The live-engine replay (ci/machine/chiplivetests.mjs) uses this form; the Rust host tests use the default form.
 // Line formats (see chip_oracle.rs): S/E scenario brackets; T transaction + result; P power cycle; A array check; D array hash; W WIP.
 import { writeFileSync } from "node:fs";
 const { ChipModel, ManualClock, UnspecifiedBehavior, NotModeled } = await import("../machine/chipmodel.mjs");
@@ -31,7 +33,9 @@ function end() {
   lines.push("E");
 }
 /** one transaction. adv = microseconds to advance first. */
-function t(tx, { read = 0, partial = 0, adv = 0 } = {}) {
+const NO_PARTIAL = process.argv.includes("--no-partial");
+function t(tx, { read = 0, partial: partialWanted = 0, adv = 0 } = {}) {
+  const partial = NO_PARTIAL ? 0 : partialWanted;
   if (adv) sc.clock.advance(adv);
   let res;
   try {

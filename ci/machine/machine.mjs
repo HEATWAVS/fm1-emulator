@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { FLASH_SIZE, SECTOR, diffSectors, corruptSectors } from "./flash.mjs";
 import { FlashIdError, parseFlashId, applyFlashId, readFlashId } from "./flashid.mjs";
-import { FlashChipError, resolveFlashChipOptions, applyFlashChip } from "./flashchip.mjs";
+import { FlashChipError, resolveFlashChipOptions, applyFlashChip, parseFlashChip } from "./flashchip.mjs";
 
 export const SAMPLE_RATE = 44100;           // the engine renders at 44.1 kHz
 const QUANTUM = 128;                         // frames per fm1_render call, as the app does
@@ -47,12 +47,21 @@ export class Fm1Machine {
    *            Selected before the first instruction runs; there is no way to change it on a running machine.
    *   flashTiming "typical" (default with a chip) | "maximum": the datasheet cycle times. Only with a chip profile.
    *            flashChip cannot be combined with flashId. Bad or conflicting input is refused before anything boots.
+   *   flashNvStatus  the chip's non-volatile status bits (value | unknown << 16, from fm1_flash_nv_status) as they were when the unit
+   *            was switched off; powerCycle() passes it for you when the same chip profile is kept. Needs a chip profile and an engine
+   *            with the flashNv capability. Not stored in `options`.
    */
-  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true, flashId = null, flashChip = null, flashTiming = null } = {}) {
+  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true, flashId = null, flashChip = null, flashTiming = null, flashNvStatus = null } = {}) {
     requires(engine, "boot", "flashRead");
     const chipChoice = resolveFlashChipOptions({ flashChip, flashTiming, flashId });         // reject bad input before booting
     if (chipChoice.chip !== "legacy" && !engine.capabilities.selectFlashChip) {
       throw new FlashChipError("unsupported-engine", `engine "${engine.name}" has no flash chip profiles (build one with node ci/engine/build.mjs)`);
+    }
+    const nvGiven = flashNvStatus !== null && flashNvStatus !== undefined;
+    if (nvGiven) {
+      if (!Number.isInteger(flashNvStatus) || flashNvStatus < 0 || flashNvStatus > 0xffffffff) throw new FlashChipError("invalid-nv-status", `flashNvStatus must be an unsigned 32-bit integer, got ${JSON.stringify(flashNvStatus)}`);
+      if (chipChoice.chip === "legacy") throw new FlashChipError("nv-needs-chip", "flashNvStatus applies to a chip profile; the legacy model has no status register");
+      if (!engine.capabilities.flashNv) throw new FlashChipError("unsupported-engine", `engine "${engine.name}" cannot restore a chip's non-volatile status`);
     }
     const preset = flashId === null || flashId === undefined ? null : parseFlashId(flashId);   // reject bad input before booting
     if (preset && !engine.flashIdLayout) {
@@ -89,6 +98,7 @@ export class Fm1Machine {
     if (chipChoice.chip !== "legacy") {          // likewise before the first instruction runs, and after any flash restore
       if (x.fm1_board() !== 0) throw new FlashChipError("unsupported-board", "flash chip profiles are for the FM-1 board only");
       flashChipInfo = applyFlashChip(x, chipChoice);
+      if (nvGiven && x.fm1_flash_nv_restore(flashNvStatus >>> 0) !== 0) throw new FlashChipError("engine-refused", "the engine refused the chip's non-volatile status");
     }
     const machine = new Fm1Machine(engine, x, pkg, { mhz, jit, usb, flashId: preset ? preset.name : null, flashChip: chipChoice.chip === "legacy" ? null : chipChoice.chip, flashTiming: chipChoice.timing });
     machine.flashIdInfo = flashIdInfo;         // null unless an ID was selected
@@ -103,7 +113,10 @@ export class Fm1Machine {
   flashWip() { requires(this.engine, "flashWip"); return this.x.fm1_flash_wip() === 1; }
 
   /** Commands the selected chip profile ignored because its datasheet is silent/contradictory, and opcodes outside the model. */
-  flashEvents() { requires(this.engine, "flashEvents"); return { unspecified: this.x.fm1_flash_events(0), notModeled: this.x.fm1_flash_events(1) }; }
+  flashEvents() {
+    requires(this.engine, "flashEvents");
+    return { unspecified: this.x.fm1_flash_events(0), notModeled: this.x.fm1_flash_events(1), lastNotModeled: this.x.fm1_flash_events(2) };   // lastNotModeled: that opcode (0 = none)
+  }
 
   // ------------------------------------------------------------ running
   /** Advance the machine by `ms` of emulated time (stops early if the CPU halts). */
@@ -195,7 +208,14 @@ export class Fm1Machine {
     let extra = [];
     if (corrupt.length) extra = corruptSectors(before, corrupt);
     const merged = new Map([...sectors, ...extra].map((s) => [s.at, s]));
-    return Fm1Machine.boot(this.engine, this.pkg, { ...this.options, ...overrides, sectors: [...merged.values()] });
+    // The same chip profile stays the same physical chip: its non-volatile status bits (BP, CMP, SRP, QE, LB) survive power-off, WEL does not.
+    // A different chip swapped in while off starts with a fresh status. (A cycle still running is treated as completing: power loss mid-cycle is not modelled.)
+    let nv = {};
+    if (this.flashChipInfo && this.engine.capabilities.flashNv && !("flashNvStatus" in overrides)) {
+      const next = "flashChip" in overrides ? (overrides.flashChip == null ? "legacy" : parseFlashChip(overrides.flashChip)) : this.flashChipInfo.chip;
+      if (next === this.flashChipInfo.chip) nv = { flashNvStatus: this.x.fm1_flash_nv_status() >>> 0 };
+    }
+    return Fm1Machine.boot(this.engine, this.pkg, { ...this.options, ...overrides, ...nv, sectors: [...merged.values()] });
   }
 }
 
