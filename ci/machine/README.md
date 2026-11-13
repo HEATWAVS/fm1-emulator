@@ -7,7 +7,8 @@ real hardware. It reads the bundled engine (`site/emulator/fm1_web.wasm`) but ne
 ## Quick start
 
 ```bash
-node ci/machine/selftest.mjs                                   # the harness's own checks (~45 s)
+node ci/machine/selftest.mjs                                   # the harness's own checks, full tier (~90 s)
+node ci/machine/selftest.mjs --quick                           # quick tier only (~5 s); also run by `npm test`
 node ci/machine/cli.mjs --fw felucca                           # boot a bundled firmware
 node ci/machine/cli.mjs --package build/fw.fwsc --seconds 5    # boot your own build
 node ci/machine/cli.mjs --fw felucca --corrupt zero:0x4000 --expect blank
@@ -89,6 +90,15 @@ Recorded as capabilities and `KNOWN LIMITATION` self-tests, so nothing passes by
 Corrupted-flash behaviour *is* real for the app area: zeroing its start blanks the screen, erasing a
 code sector halts the CPU (see `selftest.mjs`).
 
-## Not yet wired into `npm test`
+## In the test workflow
 
-Deliberately standalone for now; hooking `ci/verify.mjs` is a separate step.
+| Command | What runs | Time |
+|---|---|---|
+| `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
+| `npm run test:machine:quick` | quick tier alone (19 tests, including one real Felucca boot) | ~5 s |
+| `npm run test:machine` | full tier: every test (30), including the slower firmware-behaviour checks | ~90 s |
+
+A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the
+quick tier is a subset. The full tier is not run by `npm test` or CI; it is validated on Windows (Node 24 and
+Node 20) only. Firmware projects should call `cli.mjs` (see "From a firmware project's `make test`" above),
+not these self-tests.

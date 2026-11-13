@@ -14,8 +14,8 @@ engine made the Rust build unnecessary for a first version; the Rust build moved
 | # | Component | Status | Needs |
 |---|---|---|---|
 | 1 | Headless machine harness (`ci/machine/`) | **Done**, commit `5791302` | |
-| 2 | **Selectable flash ID** (old `85 60 14` / new `B3 60 14`) by validated runtime patch, harness only | **Done, awaiting commit** | |
-| 3 | Run the harness self-test from `npm test` | Proposed | Approval to edit `ci/verify.mjs`; self-test now takes ~90 s, decide whether it all runs there |
+| 2 | **Selectable flash ID** (old `85 60 14` / new `B3 60 14`) by validated runtime patch, harness only | **Done**, commit `9f6c78f` | |
+| 3 | **Machine self-test in the test workflow:** quick tier in `npm test` (20 s hard limit), full tier as `npm run test:machine` | **Done, awaiting commit** | Full tier in CI deferred until validated on macOS/Linux (see below) |
 | 4 | UC25HQ80 behaviour research (beyond its ID) | Proposed | Datasheet, or probing a real unit (ID, status regs, SFDP, unique ID) |
 | 5 | Isolated build of upstream Rust engine, compared with the fork's wasm; native flash-ID export | Proposed | Approval to install the Rust `wasm32-unknown-unknown` target; vendoring decision (DECISIONS D2) |
 | 6 | Flash fault injection (power cut at op N, failed write, bit flips, stuck busy) and realistic flash timing/commands | Proposed | Components 4-5; upstream `spiflash.rs` power-cut code is the starting point |
@@ -25,6 +25,10 @@ engine made the Rust build unnecessary for a first version; the Rust build moved
 **ID selection is not chip emulation.** Component 2 changes only the 3 bytes the flash chip returns
 to a JEDEC read (`0x9F`). Everything else about the chip (timing, status bits, other commands,
 protection) is unchanged and belongs to Components 4 and 6.
+
+Follow-ups to Component 3 (not scheduled): run the full machine tier in CI (`release.yml`) once it has been
+validated on macOS and Linux; a manifest-driven suite runner so a firmware project's `make test` can run
+many scenarios with one command (the CLI in `ci/machine/cli.mjs` is the integration point today).
 
 Also open: "hung" detection needs a per-firmware stimulus/response check (not a verdict in v1);
 an ID selector in the app UI is not part of any component yet.

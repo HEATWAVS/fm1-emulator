@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 // Self-test of the headless machine harness against the bundled engine and firmware.
-//   node ci/machine/selftest.mjs
-// Not part of `npm test` yet (that is a separate, deliberate step). About 40 seconds.
+//   node ci/machine/selftest.mjs           full tier: every test (about 90 s)      npm run test:machine
+//   node ci/machine/selftest.mjs --quick   quick tier: the tests tagged test.quick (about 6 s)
+//                                          npm run test:machine:quick; also run by `npm test` (ci/verify.mjs)
+//
+// Tiers: a test is quick if it is declared with test.quick(...). The full tier runs ALL tests, so the
+// quick tier is a subset by construction. Quick tests do no firmware run longer than the one Felucca
+// boot smoke test, so `npm test` stays fast; the slower firmware-behaviour tests are full-tier only.
+// A test function receives { full }: false under --quick. One test ("default is untouched") uses it to run
+// only its fast memory check in the quick tier and the whole test, with its slower run, in the full tier.
+// Success prints "PASS: N machine tests (quick|full)", the line ci/verify.mjs checks for.
 //
 // Tests marked KNOWN LIMITATION record what this engine does NOT model. They pass while the
 // limitation is real; if an engine ever starts modelling the thing, they fail and tell you the
@@ -23,10 +31,15 @@ const AURORA = new Uint8Array(readFileSync(resolve(EMULATOR_DIR, "../archive/AUR
 const MELODEE = fw("melodee-1.6.1.fwsc");
 const hex = (n) => `0x${n.toString(16)}`;
 
-const tests = [];
-const test = (name, fn) => tests.push({ name, fn });
+const args = process.argv.slice(2);
+if (args.some((a) => a !== "--quick")) { console.error("usage: node ci/machine/selftest.mjs [--quick]"); process.exit(2); }
+const QUICK_ONLY = args.includes("--quick");
 
-test("engine capabilities are detected from its exports", () => {
+const tests = [];
+const test = (name, fn) => tests.push({ name, fn, quick: false });
+test.quick = (name, fn) => tests.push({ name, fn, quick: true });
+
+test.quick("engine capabilities are detected from its exports", () => {
   const c = engine.capabilities;
   for (const k of ["boot", "flashRead", "flashBase", "flashRestore", "flashRevision", "input", "lcd"]) assert.ok(c[k], `${k}`);
   // Not exposed by this engine: a test needing them must be skipped loudly, never passed.
@@ -37,7 +50,7 @@ test("engine capabilities are detected from its exports", () => {
 });
 
 for (const [name, pkg] of [["Felucca", FELUCCA], ["AURORA", AURORA], ["Melodee", MELODEE]]) {
-  test(`${name} boots headless and shows a screen`, () => {
+  (name === "Felucca" ? test.quick : test)(`${name} boots headless and shows a screen`, () => {   // Felucca: the quick tier's real-boot smoke test
     const r = watch(Fm1Machine.boot(engine, pkg), { seconds: 3 });
     assert.equal(r.verdict, "booted", JSON.stringify({ ...r, samples: undefined }));
     assert.ok(r.final.lcdColours >= 2);
@@ -49,7 +62,7 @@ test("a run is repeatable: same screen, same flash, same clock", () => {
   assert.deepEqual(run(), run());
 });
 
-test("flash reads back: 1 MiB, populated, equal to the package base before the firmware runs", () => {
+test.quick("flash reads back: 1 MiB, populated, equal to the package base before the firmware runs", () => {
   const m = Fm1Machine.boot(engine, FELUCCA);
   const flash = m.flash();
   assert.equal(flash.length, FLASH_SIZE);
@@ -57,7 +70,7 @@ test("flash reads back: 1 MiB, populated, equal to the package base before the f
   assert.deepEqual(m.changedSectors(), []);
 });
 
-test("an injected sector reaches the machine and is reported as changed", () => {
+test.quick("an injected sector reaches the machine and is reported as changed", () => {
   const sectors = corruptedSectors(engine, FELUCCA, ["zero:0x20000"]);
   assert.deepEqual(sectors.map((s) => s.at), [0x20000]);
   const m = Fm1Machine.boot(engine, FELUCCA, { sectors });
@@ -70,14 +83,14 @@ test("corrupting the start of the app area blanks the screen (no crash)", () => 
   assert.equal(watch(Fm1Machine.boot(engine, FELUCCA, { sectors }), { seconds: 2 }).verdict, "blank");
 });
 
-test("erasing a code sector halts the CPU", () => {
+test.quick("erasing a code sector halts the CPU", () => {
   const sectors = corruptedSectors(engine, FELUCCA, ["erase:0x20000"]);
   const r = watch(Fm1Machine.boot(engine, FELUCCA, { sectors }), { seconds: 3 });
   assert.equal(r.verdict, "crashed");
   assert.ok(r.haltedAtMs > 0);
 });
 
-test("seeded bit flips are deterministic and change flash", () => {
+test.quick("seeded bit flips are deterministic and change flash", () => {
   const flash = Fm1Machine.boot(engine, FELUCCA).flash();
   const a = corruptSectors(flash, ["flip:0x20000:4096:8:7"]), b = corruptSectors(flash, ["flip:0x20000:4096:8:7"]);
   assert.deepEqual(a, b);
@@ -86,7 +99,7 @@ test("seeded bit flips are deterministic and change flash", () => {
   assert.notDeepEqual(corruptSectors(flash, ["flip:0x20000:4096:8:8"]), a, "another seed flips other bits");
 });
 
-test("power cycle carries flash over; corruption while 'off' is applied", () => {
+test.quick("power cycle carries flash over; corruption while 'off' is applied", () => {
   const sectors = corruptedSectors(engine, FELUCCA, ["zero:0x20000"]);
   const first = Fm1Machine.boot(engine, FELUCCA, { sectors });
   const again = first.powerCycle();
@@ -113,7 +126,7 @@ test("KNOWN LIMITATION: the chip-key sector (0xFF000) is blank and unused", () =
   assert.equal(hit.final.lcdHash, base.final.lcdHash);
 });
 
-test("flash record files round-trip and reject malformed input", () => {
+test.quick("flash record files round-trip and reject malformed input", () => {
   const sectors = [{ at: 0x5000, data: new Uint8Array(SECTOR).fill(7) }, { at: 0x1000, data: new Uint8Array(SECTOR).fill(9) }];
   assert.deepEqual(unpackRecords(packRecords(sectors)), sectors);
   assert.throws(() => unpackRecords(new Uint8Array(10)), /whole number/);
@@ -122,14 +135,14 @@ test("flash record files round-trip and reject malformed input", () => {
   assert.deepEqual(diffSectors(new Uint8Array(FLASH_SIZE), new Uint8Array(FLASH_SIZE)), []);
 });
 
-test("corruption specs are validated", () => {
+test.quick("corruption specs are validated", () => {
   assert.deepEqual(parseCorruption("zero:0x1000"), { kind: "zero", at: 0x1000, len: SECTOR });
   assert.throws(() => parseCorruption("melt:0"), /unknown corruption/);
   assert.throws(() => parseCorruption("flip:1:2"), /usage flip/);
   assert.throws(() => corruptSectors(new Uint8Array(FLASH_SIZE), ["zero:0x200000"]), /outside the 1 MiB/);
 });
 
-test("a file that is not a firmware package is rejected, not booted", () => {
+test.quick("a file that is not a firmware package is rejected, not booted", () => {
   assert.throws(() => Fm1Machine.boot(engine, new Uint8Array(5000).fill(1)), (e) => e instanceof BootError && e.code === "package-rejected");
 });
 
@@ -152,13 +165,13 @@ const runCase = (key, pkg, options = {}, seconds = 4) => {   // a deterministic 
 const idAt = (m, at) => [...new Uint8Array(m.x.memory.buffer, at, 3)];
 const code = (c) => (e) => e instanceof FlashIdError && e.code === c;
 
-test("flash ID: this exact engine build has a validated layout; unknown builds do not", () => {
+test.quick("flash ID: this exact engine build has a validated layout; unknown builds do not", () => {
   assert.equal(engine.capabilities.flashIdPatch, true);
   assert.deepEqual(engine.flashIdLayout, FLASH_ID_LAYOUTS[engine.wasmSha256]);
   assert.equal(engine.capabilities.selectFlashId, false, "no native engine export yet");
 });
 
-test("flash ID: requested IDs are validated (only the two hardware revisions are selectable)", () => {
+test.quick("flash ID: requested IDs are validated (only the two hardware revisions are selectable)", () => {
   for (const [input, name] of [["puya", "puya"], ["PUYA", "puya"], ["old", "puya"], ["0x856014", "puya"], ["856014", "puya"], [[0x85, 0x60, 0x14], "puya"],
     ["uc25hq80", "uc25hq80"], ["new", "uc25hq80"], ["0xB36014", "uc25hq80"], [[179, 96, 20], "uc25hq80"]]) assert.equal(parseFlashId(input).name, name, JSON.stringify(input));
   for (const bad of ["", "0x000000", "eb6014", "85 60 14", "0x85601", "0x8560145", "newer", [1, 2, 3], [0x85, 0x60], [256, 0, 0], 0x856014, {}, true])
@@ -167,7 +180,7 @@ test("flash ID: requested IDs are validated (only the two hardware revisions are
   assert.throws(() => Fm1Machine.boot(engine, FELUCCA, { flashId: "eb6014" }), code("invalid-id"), "the SMK-37's ID is recognised, not selectable");
 });
 
-test("flash ID: the live copy is PROVEN (engine's own getter), and only it is patched", () => {
+test.quick("flash ID: the live copy is PROVEN (engine's own getter), and only it is patched", () => {
   const m = Fm1Machine.boot(engine, FELUCCA);
   const found = locateLiveFlashId(m.x, engine.flashIdLayout);
   assert.equal(found.copies, 3, "3 chip-structure copies carry a known ID");
@@ -180,7 +193,7 @@ test("flash ID: the live copy is PROVEN (engine's own getter), and only it is pa
   for (const a of others) assert.deepEqual(idAt(n, a), OLD, "stale copies are left alone");
 });
 
-test("flash ID: both IDs read back; the default is the older chip", () => {
+test.quick("flash ID: both IDs read back; the default is the older chip", () => {
   const def = Fm1Machine.boot(engine, FELUCCA);
   assert.equal(def.flashIdInfo, null);
   assert.equal(def.flashId().name, "puya");
@@ -190,7 +203,9 @@ test("flash ID: both IDs read back; the default is the older chip", () => {
   assert.deepEqual(n.flashIdInfo.previous, OLD);
 });
 
-test("flash ID: default is untouched. Explicit puya == no option; uc25hq80 differs by exactly one byte of memory", () => {
+// One test, in both tiers: the fast memory-identity check always runs; the slower whole-run comparison
+// (about 4.5 s) runs only in the full tier (`full` is false under --quick).
+test.quick("flash ID: default is untouched. Explicit puya == no option; uc25hq80 differs by exactly one byte of memory", ({ full }) => {
   const snap = (opts) => new Uint8Array(Fm1Machine.boot(engine, FELUCCA, opts).x.memory.buffer).slice();
   const a = snap({}), b = snap({ flashId: "puya" }), c = snap({ flashId: "uc25hq80" });
   const diff = (p, q) => { const d = []; for (let i = 0; i < p.length; i++) if (p[i] !== q[i]) d.push(i); return d; };
@@ -198,6 +213,7 @@ test("flash ID: default is untouched. Explicit puya == no option; uc25hq80 diffe
   const d = diff(a, c);
   assert.equal(d.length, 1, "0x85 -> 0xB3; the other two ID bytes are equal");
   assert.equal(a[d[0]], 0x85); assert.equal(c[d[0]], 0xb3);
+  if (!full) return;
   // and a whole run matches Component 1's behaviour exactly
   const r0 = runCase("felucca|default", FELUCCA, {}, 2), r1 = runCase("felucca|puya", FELUCCA, { flashId: "puya" }, 2);
   assert.deepEqual(r1, r0);
@@ -238,7 +254,7 @@ test("flash ID: runs are repeatable on both IDs", () => {
   }
 });
 
-test("flash ID: a power cycle keeps the chosen ID; it can be changed at power-on; default stays default", () => {
+test.quick("flash ID: a power cycle keeps the chosen ID; it can be changed at power-on; default stays default", () => {
   const n = Fm1Machine.boot(engine, FELUCCA, { flashId: "uc25hq80" });
   assert.equal(n.options.flashId, "uc25hq80");
   assert.equal(n.powerCycle().flashId().name, "uc25hq80");
@@ -263,7 +279,7 @@ test("flash ID: an engine build without a validated layout is refused; the defau
   assert.throws(() => locateLiveFlashId(plain.x, null), code("unsupported-engine"));
 });
 
-test("flash ID: refused on a board other than the FM-1", () => {
+test.quick("flash ID: refused on a board other than the FM-1", () => {
   const smk = { ...engine, instantiate: () => ({ ...engine.instantiate(), fm1_board: () => 1 }) };   // (the export object is frozen: copy it)
   assert.throws(() => Fm1Machine.boot(smk, FELUCCA, { flashId: "uc25hq80" }), code("unsupported-board"));
   assert.equal(Fm1Machine.boot(smk, FELUCCA).flashIdInfo, null, "without the option nothing is checked or touched");
@@ -279,7 +295,7 @@ function fakeX({ copies = [0x100, 0x2000, 0x4000], liveWord = 0x4024, idBytes = 
 }
 const LAYOUT = { jedecOffsetFromFlashPtr: 48, searchWindow: 256, copies: 3 };
 
-test("flash ID safety (synthetic memory): proves the live copy, patches only it, restores every probe write", () => {
+test.quick("flash ID safety (synthetic memory): proves the live copy, patches only it, restores every probe write", () => {
   const { mem, x } = fakeX();
   const before = mem.slice();
   const found = locateLiveFlashId(x, LAYOUT);
@@ -293,7 +309,7 @@ test("flash ID safety (synthetic memory): proves the live copy, patches only it,
   assert.equal(r.method, "runtime-patch");
 });
 
-test("flash ID safety (synthetic memory): wrong layout, wrong ID, no live copy, ambiguity: all refuse and change nothing", () => {
+test.quick("flash ID safety (synthetic memory): wrong layout, wrong ID, no live copy, ambiguity: all refuse and change nothing", () => {
   const refuse = (setup, expectedCode, layout = LAYOUT) => {
     const { mem, x } = fakeX(setup), before = mem.slice();
     assert.throws(() => applyFlashId(x, layout, FLASH_IDS.uc25hq80), code(expectedCode), JSON.stringify(setup));
@@ -319,16 +335,23 @@ test("flash ID: CLI default output is unchanged; the option and invalid IDs beha
   assert.equal(bad.status, 2); assert.match(bad.stderr, /unsupported flash ID/);
 });
 
+const selected = QUICK_ONLY ? tests.filter((t) => t.quick) : tests;
+const tier = QUICK_ONLY ? "quick" : "full";
+if (!selected.length) { console.log(`FAIL: no machine tests selected (${tier} tier)`); process.exit(1); }
+
 let failed = 0;
-for (const { name, fn } of tests) {
+const started = performance.now();
+for (const { name, fn } of selected) {
   const t0 = performance.now();
   try {
-    await fn();
+    await fn({ full: !QUICK_ONLY });
     console.log(`ok   ${name}  (${Math.round(performance.now() - t0)} ms)`);
   } catch (error) {
     failed++;
     console.log(`FAIL ${name}\n     ${String(error.stack ?? error).split("\n").slice(0, 6).join("\n     ")}`);
   }
 }
-console.log(`\n${tests.length - failed}/${tests.length} passed — engine ${engine.name} sha256 ${engine.wasmSha256.slice(0, 16)}…`);
+const seconds = ((performance.now() - started) / 1000).toFixed(1);
+console.log(`\n${selected.length - failed}/${selected.length} passed (${tier} tier${QUICK_ONLY ? `, ${tests.length} tests in the full suite` : ""}, ${seconds} s) — engine ${engine.name} sha256 ${engine.wasmSha256.slice(0, 16)}…`);
+if (!failed) console.log(`PASS: ${selected.length} machine tests (${tier})`);
 process.exit(failed ? 1 : 0);

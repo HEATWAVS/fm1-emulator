@@ -218,6 +218,18 @@ assert.equal(sessionTests.status, 0, `session-play unit tests failed:\n${session
 assert.match(sessionTests.stdout, /session-play tests: \d+ passed/, "session-play unit tests report a pass count");
 assert.ok(existsSync(resolve(emulator, "session-play.js")), "session-play module is shipped");
 
+// Headless machine harness, quick tier (ci/machine/selftest.mjs --quick): boots real firmware on the
+// emulated CPU and checks the flash and flash-ID safety logic. Hard limit so a stuck emulation can never
+// hang `npm test`. The full tier (about 90 s) is `npm run test:machine`, deliberately not run here.
+const MACHINE_QUICK_LIMIT_MS = 20_000;
+const machineQuick = spawnSync(process.execPath, [resolve(root, "ci/machine/selftest.mjs"), "--quick"],
+  { encoding: "utf8", timeout: MACHINE_QUICK_LIMIT_MS, killSignal: "SIGKILL" });
+assert.notEqual(machineQuick.error?.code, "ETIMEDOUT",
+  `machine self-test (quick tier) exceeded its ${MACHINE_QUICK_LIMIT_MS / 1000}-second limit and was stopped:\n${machineQuick.stdout}\n${machineQuick.stderr}`);
+assert.ok(!machineQuick.error, `machine self-test (quick tier) could not run: ${machineQuick.error}`);
+assert.equal(machineQuick.status, 0, `machine self-test (quick tier) failed:\n${machineQuick.stdout}\n${machineQuick.stderr}`);
+assert.match(machineQuick.stdout, /PASS: \d+ machine tests \(quick\)/, "machine self-test (quick tier) reports a pass count");
+
 const readme = text("README.md");
 assert.match(readme, new RegExp(`\\b${entries.length}\\b`), "README firmware count");
 assert.match(text("THIRD-PARTY.md"), new RegExp(`Bundled firmware \\(${entries.length}\\)`), "third-party count");

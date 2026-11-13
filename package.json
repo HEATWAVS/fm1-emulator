@@ -10,6 +10,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node ci/verify.mjs",
+    "test:machine": "node ci/machine/selftest.mjs",
+    "test:machine:quick": "node ci/machine/selftest.mjs --quick",
     "test:radar": "node ci/test-radar.mjs",
     "test:flash": "node ci/test-flash.mjs",
     "test:flash:all": "node ci/test-flash-all.mjs",
