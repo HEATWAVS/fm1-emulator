@@ -1,6 +1,6 @@
 # Current status
 
-Last updated: 2026-11-13. Read this first; details live in the other files in this folder.
+Last updated: 2026-11-13 (after Component 4 Stage C2). Read this first; details live in the other files in this folder.
 
 ## Where we are
 - Fork `HEATWAVS/fm1-emulator` (origin) of `briksquared/fm1-emulator` (upstream) cloned; full history.
@@ -9,29 +9,32 @@ Last updated: 2026-11-13. Read this first; details live in the other files in th
 - Docs and `CLAUDE.md`: commit `980b10c`.
 - **Component 2 (selectable flash ID): done**, commit `9f6c78fceb96de86c2086c8ff1d46946daa6827e`. ID selection only, not chip emulation; patches only a validated engine build (`fm1_web.wasm` sha256 `cdf039104a74...0278`).
 - **Component 3 (machine self-test in the test workflow): done**, commit `69afefa2ebf35c785a61cfb5893a648bfa9557fd`. `npm test` runs the machine quick tier with a 20 s hard limit; `npm run test:machine:quick` and `npm run test:machine` run the tiers.
-- **Component 4 Stage A (flash-chip reference model and conformance tests): implemented, reviewed and verified, not yet committed.** A final review found one defect (Puya chip erase misread as conflicting; it is unambiguous), fixed and re-verified (DECISIONS D29). JavaScript only: `ci/machine/chipspec.mjs` (datasheet data + page-level citations), `chipmodel.mjs` (the model), `chiptests.mjs` (75 tests), plus `docs/dev/FLASH-CHIPS.md`. A specification and test oracle for the Puya P25Q80H (reference profile) and the UC25HQ80; **not wired into the running emulator**, whose engine is unchanged.
+- **Component 4 Stage A (flash-chip reference model and conformance tests): done**, commit `be69973`. JavaScript only: `ci/machine/chipspec.mjs` (datasheet data + page-level citations), `chipmodel.mjs` (the model), `chiptests.mjs` (75 tests), `docs/dev/FLASH-CHIPS.md`. A specification and test oracle for the Puya P25Q80H (reference profile) and the UC25HQ80.
+- **Component 4 Stage B (isolated upstream v0.3.0 build and parity): done** (scratch, outside the repo; reproducible now through `ci/engine/build.mjs`). The shipped engine is not a build of public source; v0.3.0 matched it on every compared observable (51 of 51 runs) with one known, uninvestigated XIP-tail difference (ARCHITECTURE.md).
+- **Component 4 Stage C, steps C0-C2: done**, committed as C2 (`git log`). C0 clock investigation (the SoC cycle counter is a reliable timing source), C1 Rust port in an isolated copy, C2 integration: `ci/engine/` (patch, pins, reproducible build script, tables generated from `chipspec.mjs`), harness options `flashChip`/`flashTiming` and CLI `--flash-chip`/`--flash-timing`/`--engine`. The built test engine is **never committed** (`ci/engine/out/`). **The shipped `fm1_web.wasm` is unchanged**; with no option the default is the original flash model. C3 (live conformance/failure tests) and C4 (firmware tests under each profile) are **not started and not approved**.
 - All commits are local only (not pushed).
 
 ## How to run
-`npm test` (existing suite + machine quick tier, ~13 s) | `npm run test:machine:quick` (94 tests, ~5 s) | `npm run test:machine` (full, 105 tests = 30 harness + 75 chip-model, ~90 s) | `node ci/machine/chiptests.mjs` (the 75 chip-model tests alone, ~0.3 s) | `node ci/machine/cli.mjs --fw quadro-fm1 --flash-id new` (see `ci/machine/README.md`).
+`npm test` (existing suite + machine quick tier, ~14 s) | `npm run test:machine:quick` (102 tests, ~6 s) | `npm run test:machine` (full, 119 tests = 44 harness + 75 chip-model; ~90 s, ~140 s with the chip engine; without the engine 114 run and 5 are reported SKIPPED) | `node ci/machine/chiptests.mjs` (the 75 chip-model tests alone) | `node ci/engine/build.mjs --upstream <clone of joakimeriksson/fm1-emu> [--test]` (builds the chip-profile test engine; `ci/engine/README.md`) | `node ci/machine/cli.mjs --fw quadro-fm1 --flash-chip uc25hq80` or `--flash-id new` (`ci/machine/README.md`).
 
 ## Not started
-Component 4 Stages B-D (isolated engine build, Rust port of the chip model, harness integration) and Components 5-7 in PROJECT-PLAN.md. Nothing beyond Stage A is approved.
+Component 4 steps C3 and C4 and Components 5-7 in PROJECT-PLAN.md. Nothing beyond C2 is approved.
 
 ## Open questions (need the user)
 1. **Which physical chip is in the older FM-1 is UNRESOLVED.** `P25Q80H` is only the documented reference profile (its ID table matches `85 60 14`); other Puya variants may share the ID and differ in detail. Needs the chip marking or status/SFDP reads from a real older unit (see FLASH-CHIPS.md).
 2. Where does the user's `make test` come from? Neither this repo nor upstream has a Makefile; the harness README has a sample snippet only. The separate FM1 Firmware project has not been accessed.
 3. When to add the full machine tier to CI (`.github/workflows/release.yml`)? Deferred until validated on macOS and Linux. The quick tier already runs in CI through `npm test` (release tags and manual dispatch only; Node 20; Windows, macOS, Linux).
-4. Stage B approvals: install the Rust `wasm32-unknown-unknown` target? Vendor/pin the upstream MIT source, or keep it outside the repo? Ask the fork's author for the engine source first?
+4. C3/C4 approval: live conformance and failure tests, then firmware tests under each profile. The main technical risk to measure in C4 is host cost: a 2-20 ms WIP poll is about 0.2-2 M emulated cycles of real execution (the polling loop is not skipped), so firmware with many flash writes (coqui: about 1,200) will run slower under a profile.
 5. The model refuses (throws) where the datasheets are silent or contradictory, e.g. UC25HQ80 chip erase at 14 of the 64 BP/CMP combinations (Puya's chip-erase rule is unambiguous and fully decided), WEL after rejected commands (list in FLASH-CHIPS.md). Should any be settled by probing a real unit?
 6. Push to origin? Not done; only on request.
 7. Is "both revisions use the AC791N" true for the newer unit? Unverified.
 8. The CLI `--save-flash` / `--flash` round trip is still untested (listed in TESTING.md).
 
 ## Known risks
-- The fork's compiled engine is not a build of the public upstream source (ARCHITECTURE.md). Source for its extras is not public. Every chip behaviour beyond the ID (timing, status/protection, page wrap) needs an engine we can rebuild; none can change in the shipped `fm1_web.wasm`.
+- The fork's compiled engine is not a build of the public upstream source (ARCHITECTURE.md). Chip behaviour beyond the ID exists only in the separately built chip-profile engine (v0.3.0-based: no USB host, the known **XIP-tail difference** (3,488 bytes at the end of the decoded XIP window, not investigated), **array-at-accept**: the array changes when a program/erase is accepted, not at the end of the cycle, non-volatile status bits not carried across `powerCycle()`); none of it can change in the shipped `fm1_web.wasm`.
+- The chip-profile engine hash is verified for one toolchain (rustc 1.97.1, Windows). Another toolchain builds a working engine with a different hash; the build script says so and still checks the exports.
 - The flash-ID patch works only on the exact engine build validated; a rebuilt `fm1_web.wasm` must be re-validated first.
-- Machine and chip-model tests have been verified on Windows only (Node 24.19.0 and Node 20.20.2). macOS and Linux are unverified; the quick tier gates releases through `npm test`. Slow CI machines could approach the quick tier's 20 s limit (about 5 s here).
+- Machine, chip-model and chip-engine tests have been verified on Windows only (Node 24.19.0; Node 20.20.2 for the earlier tiers, not re-run for Stage C). macOS and Linux are unverified; the quick tier gates releases through `npm test`. Slow CI machines could approach the quick tier's 20 s limit (about 5 s here).
 - The chip model rests on two datasheets (Puya V1.7, UC25HQ80 v1.2); other revisions may differ. Typical timings are "not 100% tested"; no minimum timing exists in either document.
 - Boot ROM/loader are not emulated, so true bricking cannot be reproduced (TESTING.md known limitations).
 

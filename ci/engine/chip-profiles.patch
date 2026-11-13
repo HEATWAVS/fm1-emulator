@@ -1,0 +1,1235 @@
+diff --git a/crates/fm1-soc/src/lib.rs b/crates/fm1-soc/src/lib.rs
+index b342349..426523d 100644
+--- a/crates/fm1-soc/src/lib.rs
++++ b/crates/fm1-soc/src/lib.rs
+@@ -35,12 +35,15 @@ pub mod periph;
+ mod ram;
+ pub mod smk;
+ mod spiflash;
++pub mod spichip;
++mod spichip_tables;
+ pub mod usb;
+ 
+ pub use lcd::{write_bmp, Lcd};
+ pub use periph::{Action, Periph, CPU_HZ, VEC_BASE};
+ pub use ram::Ram;
+ pub use spiflash::{SpiFlash, FLASH_SIZE};
++pub use spichip::{Chip, ChipKind, Timing};
+ 
+ pub const XIP_BASE: u32 = 0x0200_0000;
+ pub const RAM_BASE: u32 = 0x01c0_0000;
+@@ -960,6 +963,7 @@ impl Soc {
+                 // PD0 drives the flash chip select; PA1/PA3/PA4 clock the
+                 // key-matrix shift registers
+                 if addr == 0x500c0 {
++                    self.flash.set_clock(self.periph.cycles, self.periph.hz);
+                     self.flash.set_cs(value & 1 == 0);
+                     self.sync_xip();
+                 }
+@@ -972,6 +976,7 @@ impl Soc {
+                 }
+             }
+             Region::Spi0 => {
++                self.flash.set_clock(self.periph.cycles, self.periph.hz);
+                 self.flash.write(addr, value);
+                 self.sync_xip();
+             }
+diff --git a/crates/fm1-soc/src/spichip.rs b/crates/fm1-soc/src/spichip.rs
+new file mode 100644
+index 0000000..1d8239d
+--- /dev/null
++++ b/crates/fm1-soc/src/spichip.rs
+@@ -0,0 +1,710 @@
++//! Datasheet-based SPI NOR chip state machine (HEATWAVS Stage C1), used by `SpiFlash` when a
++//! chip profile is selected. The default (no profile) is the original instantaneous model.
++//!
++//! The behaviour is a port of the Stage A reference model (`ci/machine/chipmodel.mjs`, which cites
++//! the Puya P25Q80H V1.7 and UC25HQ80 v1.2 datasheets by page and section for every behaviour);
++//! `tests/chip_oracle.rs` replays transcripts generated from that model against this code.
++//!
++//! Differences from the reference model, all deliberate:
++//! * Byte stream, not transactions. SPI0 moves whole bytes and chip select is a GPIO, so a
++//!   transaction ends when CS rises. Cases the byte stream cannot express (extra bytes after
++//!   RDSR/RDID are just more read slots; CS rising mid-byte) exist only in the reference model
++//!   and, for CS mid-byte, through `Chip::release(.., partial_bits)` (tests only).
++//! * Unspecified behaviour is never guessed: the command is ignored with no state change and the
++//!   datasheet behaviour id is recorded in `Events` (the reference model throws instead).
++//!   Status bits whose value the datasheet leaves open are tracked in `status_unknown`.
++//! * The array changes when a program/erase command is accepted (CS rises), as in the original
++//!   model, while WIP/WEL follow the cycle time. The datasheets leave the array contents during
++//!   a cycle unspecified (`array.during-cycle`) and reads during a cycle are not answered.
++//! * Time is the SoC cycle counter (`Periph::cycles`) at `hz`; cycle durations are the datasheet
++//!   typical or maximum figures rounded up to whole cycles.
++//! * FM1_FLASH_CUT power cuts are not honoured under a chip profile (native fm1-live only).
++
++use crate::spichip_tables::{Profile, Row, PUYA, UC25HQ80};
++use crate::spiflash::FLASH_SIZE;
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum ChipKind {
++    Puya,
++    Uc25hq80,
++}
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum Timing {
++    Typical,
++    Maximum,
++}
++
++// 16-bit status register (S15..S8 read by 35h, S7..S0 by 05h)
++pub const WIP: u16 = 1 << 0;
++pub const WEL: u16 = 1 << 1;
++const BP0: u16 = 1 << 2;
++const BP1: u16 = 1 << 3;
++const BP2: u16 = 1 << 4;
++const BP3: u16 = 1 << 5;
++const BP4: u16 = 1 << 6;
++const SRP0: u16 = 1 << 7;
++const SRP1: u16 = 1 << 8;
++const QE: u16 = 1 << 9;
++const LB1: u16 = 1 << 11;
++const LB2: u16 = 1 << 12;
++const LB3: u16 = 1 << 13;
++const CMP: u16 = 1 << 14;
++const BP: u16 = BP0 | BP1 | BP2 | BP3 | BP4;
++const LB: u16 = LB1 | LB2 | LB3;
++const LOW_WRITABLE: u16 = SRP0 | BP;
++const HIGH_WRITABLE: u16 = SRP1 | QE | LB | CMP;
++const ONE_BYTE_CLEARS: u16 = CMP | QE | SRP1;
++
++const PAGE: usize = 256;
++const BYTES: usize = FLASH_SIZE;
++
++/// What the chip was asked that its datasheet does not settle, or that is outside the model.
++#[derive(Default, Clone, Debug)]
++pub struct Events {
++    /// commands ignored because the datasheet is silent or contradicts itself
++    pub unspecified: u32,
++    /// opcodes outside the modelled set (answered with 0xFF, no state change)
++    pub not_modeled: u32,
++    /// ids of the most recent events (behaviour ids from chipspec.mjs), oldest dropped
++    pub log: Vec<&'static str>,
++}
++
++const LOG_MAX: usize = 64;
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++enum Cmd {
++    /// nothing to do (an ignored command, an unmodelled opcode, no opcode yet)
++    Ignore,
++    Rdsr(u8),
++    Rdid,
++    Read03,
++    Read0b,
++    /// executes when CS rises
++    Write(u8),
++}
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++enum CycleKind {
++    Program,
++    Erase,
++    Wrsr,
++}
++
++#[derive(Clone, Copy, Debug)]
++struct Busy {
++    end: u64,
++    kind: CycleKind,
++    /// status after a write-status cycle completes (Wrsr only)
++    next_sr: u16,
++    next_unknown: u16,
++    /// status bits whose value is open while the cycle runs
++    unknown_bits: u16,
++}
++
++pub struct Chip {
++    kind: ChipKind,
++    timing: Timing,
++    wp: bool,
++    sr: u16,
++    unknown: u16,
++    busy: Option<Busy>,
++    now: u64,
++    hz: u64,
++    // the current transaction
++    cmd: Cmd,
++    n: usize,
++    hdr: [u8; 4],
++    latch: [u8; PAGE],
++    used: [bool; PAGE],
++    /// unspecified-event guard for the "read past the ID" case (once per transaction)
++    id_extra: bool,
++    pub events: Events,
++}
++
++impl Chip {
++    pub fn new(kind: ChipKind, timing: Timing) -> Self {
++        Self {
++            kind,
++            timing,
++            wp: true,
++            sr: 0,
++            unknown: 0,
++            busy: None,
++            now: 0,
++            hz: 1_000_000,
++            cmd: Cmd::Ignore,
++            n: 0,
++            hdr: [0; 4],
++            latch: [0xff; PAGE],
++            used: [false; PAGE],
++            id_extra: false,
++            events: Events::default(),
++        }
++    }
++
++    pub fn kind(&self) -> ChipKind { self.kind }
++    pub fn timing(&self) -> Timing { self.timing }
++    pub fn set_timing(&mut self, t: Timing) { self.timing = t; }
++    /// The WP# pin (default high). Only matters when SRP1:SRP0 = 0:1.
++    pub fn set_wp(&mut self, high: bool) { self.wp = high; }
++
++    fn profile(&self) -> &'static Profile {
++        match self.kind {
++            ChipKind::Puya => &PUYA,
++            ChipKind::Uc25hq80 => &UC25HQ80,
++        }
++    }
++
++    /// The SoC's clock: the cycle count and cycles per second. Called before every operation.
++    pub fn set_clock(&mut self, now: u64, hz: u64) {
++        self.now = now;
++        self.hz = hz.max(1);
++    }
++
++    fn cycles(&self, us: u32) -> u64 {
++        ((us as u128 * self.hz as u128 + 999_999) / 1_000_000) as u64
++    }
++
++    fn event(&mut self, id: &'static str, unspecified: bool) {
++        if unspecified { self.events.unspecified += 1 } else { self.events.not_modeled += 1 }
++        if self.events.log.len() >= LOG_MAX {
++            self.events.log.remove(0);
++        }
++        self.events.log.push(id);
++    }
++    fn unspec(&mut self, id: &'static str) { self.event(id, true); }
++
++    /// Take (and clear) the recorded event ids.
++    pub fn take_log(&mut self) -> Vec<&'static str> { std::mem::take(&mut self.events.log) }
++
++    // ------------------------------------------------------------ time and status
++    fn settle(&mut self) {
++        if let Some(b) = self.busy {
++            if self.now >= b.end {
++                self.busy = None;
++                if b.kind == CycleKind::Wrsr {
++                    self.sr = b.next_sr;
++                    self.unknown = b.next_unknown;
++                }
++                self.sr &= !(WEL | WIP); // completion resets WEL (both datasheets)
++                self.unknown &= !WEL;
++            }
++        }
++    }
++
++    /// (value, unknown mask) of the 16-bit status register at the current time.
++    pub fn status(&mut self) -> (u16, u16) {
++        self.settle();
++        let mut value = self.sr & !WIP;
++        let mut unknown = self.unknown;
++        if let Some(b) = self.busy {
++            value |= WIP;
++            unknown |= b.unknown_bits;
++            if self.kind == ChipKind::Uc25hq80 {
++                unknown |= WEL; // UC: WEL resets 'at some unspecified time before completion'
++            }
++        }
++        (value, unknown)
++    }
++
++    /// Is a program/erase/write-status cycle running at the current time?
++    pub fn wip(&mut self) -> bool {
++        self.settle();
++        self.busy.is_some()
++    }
++
++    /// Cycle count at which the running cycle ends, if any (introspection).
++    pub fn busy_until(&mut self) -> Option<u64> {
++        self.settle();
++        self.busy.map(|b| b.end)
++    }
++
++    /// Power off and on: WEL clears, SRP1:SRP0 = 1:0 returns to 0:0. Not allowed mid-cycle (that is
++    /// fault injection, not modelled): recorded and ignored.
++    pub fn power_cycle(&mut self) {
++        self.settle();
++        if self.busy.is_some() {
++            self.event("nm.power-loss", false);
++            return;
++        }
++        self.sr &= !(WEL | WIP);
++        self.unknown &= !WEL;
++        if self.unknown & (SRP0 | SRP1) == 0 && self.sr & SRP1 != 0 && self.sr & SRP0 == 0 {
++            self.sr &= !SRP1;
++        }
++        self.cmd = Cmd::Ignore;
++        self.n = 0;
++    }
++
++    // ------------------------------------------------------------ the byte stream
++    /// CS# fell: a new transaction.
++    pub fn select(&mut self) {
++        self.cmd = Cmd::Ignore;
++        self.n = 0;
++        self.id_extra = false;
++    }
++
++    fn first_byte(&mut self, op: u8) {
++        self.settle();
++        self.hdr[0] = op;
++        const MODELED: [u8; 15] = [0x06, 0x04, 0x05, 0x35, 0x01, 0x02, 0x81, 0x20, 0x52, 0xd8, 0x60, 0xc7, 0x9f, 0x03, 0x0b];
++        if !MODELED.contains(&op) {
++            let id = match op {
++                0x15 | 0x31 if self.kind == ChipKind::Puya => "nm.puya-config-register",
++                0x50 => "nm.vwren",
++                0x25 => "nm.asi",
++                0x75 | 0xb0 | 0x7a | 0x30 => "nm.suspend-resume",
++                0xb9 | 0xab => "nm.deep-power-down",
++                0x66 | 0x99 => "nm.reset",
++                0x44 | 0x42 | 0x48 => "nm.security",
++                0x4b | 0x5a => "nm.unique-sfdp",
++                0x3b | 0xbb | 0x6b | 0xeb | 0xa2 | 0x32 => "nm.multi-io",
++                0x90 | 0x92 | 0x94 => "nm.electronic-id",
++                0x77 | 0xff => "nm.burst-wrap",
++                _ => "cmd.unknown",
++            };
++            self.event(id, false);
++            self.cmd = Cmd::Ignore;
++            return;
++        }
++        if let Some(b) = self.busy {
++            self.cmd = match op {
++                0x05 => Cmd::Rdsr(0),
++                0x35 => Cmd::Rdsr(8),
++                0x9f => {
++                    if b.kind == CycleKind::Wrsr {
++                        self.unspec("id.rdid-busy-wrsr");
++                        Cmd::Ignore
++                    } else {
++                        Cmd::Ignore // not decoded, does not disturb the cycle (answers nothing)
++                    }
++                }
++                0x03 | 0x0b => Cmd::Ignore, // rejected without effect on the cycle
++                _ => {
++                    self.unspec("cmd.busy");
++                    Cmd::Ignore
++                }
++            };
++            return;
++        }
++        self.cmd = match op {
++            0x05 => Cmd::Rdsr(0),
++            0x35 => Cmd::Rdsr(8),
++            0x9f => Cmd::Rdid,
++            0x03 => Cmd::Read03,
++            0x0b => Cmd::Read0b,
++            _ => {
++                if op == 0x02 {
++                    self.used = [false; PAGE];
++                }
++                Cmd::Write(op)
++            }
++        };
++    }
++
++    /// One byte exchanged on MOSI; returns the byte on MISO. `mem` is the array (reads only).
++    pub fn transfer(&mut self, mem: &[u8], out: u8) -> u8 {
++        let i = self.n;
++        self.n += 1;
++        if i == 0 {
++            self.first_byte(out);
++            return 0xff;
++        }
++        let k = i - 1;
++        match self.cmd {
++            Cmd::Ignore => 0xff,
++            Cmd::Rdsr(shift) => {
++                let (v, _) = self.status();
++                (v >> shift) as u8
++            }
++            Cmd::Rdid => {
++                if k < 3 {
++                    self.profile().jedec[k]
++                } else {
++                    if !self.id_extra {
++                        self.id_extra = true;
++                        self.unspec("id.rdid-extra-bytes");
++                    }
++                    0xff
++                }
++            }
++            Cmd::Read03 | Cmd::Read0b => {
++                let head = if self.cmd == Cmd::Read03 { 3 } else { 4 };
++                if k < 3 {
++                    self.hdr[k + 1] = out;
++                    0xff
++                } else if k < head {
++                    0xff // fast-read dummy byte
++                } else {
++                    let start = ((self.hdr[1] as usize) << 16) | ((self.hdr[2] as usize) << 8) | self.hdr[3] as usize;
++                    mem[(start + (k - head)) % BYTES]
++                }
++            }
++            Cmd::Write(op) => {
++                if i < 4 {
++                    self.hdr[i] = out;
++                } else if op == 0x02 {
++                    let o = (self.hdr[3] as usize + (i - 4)) & 0xff;
++                    self.latch[o] = out;
++                    self.used[o] = true;
++                }
++                0xff
++            }
++        }
++    }
++
++    // ------------------------------------------------------------ CS rises: commands execute
++    /// CS# rose, `partial_bits` clocks (0..=7) after the last whole byte (always 0 on the SoC's
++    /// byte-wide SPI0). Returns the flash range an erase/program changed, if any.
++    pub fn release(&mut self, mem: &mut [u8], partial_bits: u8) -> Option<(usize, usize)> {
++        let n = self.n;
++        let cmd = self.cmd;
++        self.n = 0;
++        self.cmd = Cmd::Ignore;
++        if n == 0 {
++            return None;
++        }
++        self.settle();
++        match cmd {
++            Cmd::Ignore | Cmd::Rdsr(_) | Cmd::Rdid => None,
++            Cmd::Read03 | Cmd::Read0b => {
++                let need = if cmd == Cmd::Read03 { 4 } else { 5 };
++                if n < need {
++                    self.unspec("read.malformed");
++                } else if (((self.hdr[1] as usize) << 16) | ((self.hdr[2] as usize) << 8) | self.hdr[3] as usize) >= BYTES {
++                    self.unspec("addr.range");
++                }
++                None
++            }
++            Cmd::Write(op) => self.execute(mem, op, n, partial_bits),
++        }
++    }
++
++    fn addr(&self) -> usize { ((self.hdr[1] as usize) << 16) | ((self.hdr[2] as usize) << 8) | self.hdr[3] as usize }
++
++    fn start(&mut self, kind: CycleKind, us: u32, next_sr: u16, next_unknown: u16, unknown_bits: u16) {
++        self.busy = Some(Busy { end: self.now + self.cycles(us), kind, next_sr, next_unknown, unknown_bits });
++    }
++    fn us(&self) -> &'static crate::spichip_tables::TimingUs {
++        let p = self.profile();
++        match self.timing {
++            Timing::Typical => &p.typical,
++            Timing::Maximum => &p.maximum,
++        }
++    }
++
++    /// The write-enable latch, or None (event recorded) when its value is open.
++    fn wel_set(&mut self) -> Option<bool> {
++        if self.unknown & WEL != 0 {
++            self.unspec("wel.after-rejected");
++            return None;
++        }
++        Some(self.sr & WEL != 0)
++    }
++    fn rejected_boundary(&mut self, name: &str, partial: u8) {
++        if !(self.kind == ChipKind::Uc25hq80 && name == "pp" && partial != 0) {
++            self.unknown |= WEL; // not stated by the datasheets: open
++        }
++    }
++    fn ignored_protected(&mut self, name: &str) {
++        if self.kind == ChipKind::Puya && name == "be32" {
++            self.sr &= !WEL; // Puya p37: 'the WEL bit will be reset'
++        } else {
++            self.unknown |= WEL;
++        }
++    }
++
++    /// The protected range for the current BP/CMP, Err when those bits are open.
++    fn protected_range(&mut self) -> Result<Option<(u32, u32)>, ()> {
++        if self.unknown & (BP | CMP) != 0 {
++            self.unspec("prot.table");
++            return Err(());
++        }
++        let bp = [BP4, BP3, BP2, BP1, BP0].map(|b| (self.sr & b != 0) as i8);
++        let p = self.profile();
++        let rows: &[Row] = if self.sr & CMP != 0 { p.cmp1 } else { p.cmp0 };
++        let row = rows.iter().find(|r| r.pat.iter().zip(bp.iter()).all(|(c, b)| *c == -1 || c == b));
++        Ok(row.expect("protection table covers every BP combination").range)
++    }
++    fn overlaps_protected(&mut self, lo: usize, hi: usize) -> Result<bool, ()> {
++        Ok(self.protected_range()?.is_some_and(|(plo, phi)| lo as u32 <= phi && hi as u32 >= plo))
++    }
++
++    fn execute(&mut self, mem: &mut [u8], op: u8, n: usize, partial: u8) -> Option<(usize, usize)> {
++        match op {
++            0x06 | 0x04 => {
++                if n != 1 {
++                    self.unspec("cmd.extra-bytes");
++                    return None;
++                }
++                if partial != 0 {
++                    return None; // rejected: 'not executed' read as no state change
++                }
++                if op == 0x06 { self.sr |= WEL } else { self.sr &= !WEL }
++                self.unknown &= !WEL;
++                None
++            }
++            0x02 => self.page_program(mem, n, partial),
++            0x01 => {
++                self.wrsr(n, partial);
++                None
++            }
++            0x60 | 0xc7 => self.chip_erase(mem, n, partial),
++            _ => self.erase(mem, op, n, partial), // 81h 20h 52h D8h
++        }
++    }
++
++    fn page_program(&mut self, mem: &mut [u8], n: usize, partial: u8) -> Option<(usize, usize)> {
++        match self.wel_set() {
++            None | Some(false) => return None, // open WEL (event) or ignored without WEL
++            Some(true) => {}
++        }
++        if n < 5 {
++            self.unspec("pp.min-one-byte");
++            return None;
++        }
++        if partial != 0 {
++            self.rejected_boundary("pp", partial);
++            return None;
++        }
++        let addr = self.addr();
++        if addr >= BYTES {
++            self.unspec("addr.range");
++            return None;
++        }
++        let page = addr - addr % PAGE;
++        match self.overlaps_protected(page, page + PAGE - 1) {
++            Err(()) => return None,
++            Ok(true) => {
++                self.ignored_protected("pp");
++                return None;
++            }
++            Ok(false) => {}
++        }
++        let (mut lo, mut hi) = (PAGE, 0);
++        for o in 0..PAGE {
++            if self.used[o] {
++                mem[page + o] &= self.latch[o];
++                lo = lo.min(o);
++                hi = hi.max(o + 1);
++            }
++        }
++        let us = self.us().pp;
++        self.start(CycleKind::Program, us, 0, 0, 0);
++        Some((page + lo, page + hi))
++    }
++
++    fn erase(&mut self, mem: &mut [u8], op: u8, n: usize, partial: u8) -> Option<(usize, usize)> {
++        let (name, size) = match op {
++            0x81 => ("pe", PAGE),
++            0x20 => ("se", 4096),
++            0x52 => ("be32", 32768),
++            _ => ("be64", 65536),
++        };
++        match self.wel_set() {
++            None | Some(false) => return None,
++            Some(true) => {}
++        }
++        if partial != 0 || n != 4 {
++            self.rejected_boundary(name, partial);
++            return None;
++        }
++        let addr = self.addr();
++        if addr >= BYTES {
++            self.unspec("addr.range");
++            return None;
++        }
++        let lo = addr - addr % size;
++        let hi = lo + size - 1;
++        match self.overlaps_protected(lo, hi) {
++            Err(()) => return None,
++            Ok(true) => {
++                self.ignored_protected(name);
++                return None;
++            }
++            Ok(false) => {}
++        }
++        mem[lo..=hi].fill(0xff);
++        let t = self.us();
++        let us = match op {
++            0x81 => t.pe,
++            0x20 => t.se,
++            0x52 => t.be32,
++            _ => t.be64,
++        };
++        self.start(CycleKind::Erase, us, 0, 0, 0);
++        Some((lo, hi + 1))
++    }
++
++    fn chip_erase(&mut self, mem: &mut [u8], n: usize, partial: u8) -> Option<(usize, usize)> {
++        match self.wel_set() {
++            None | Some(false) => return None,
++            Some(true) => {}
++        }
++        if partial != 0 || n != 1 {
++            self.rejected_boundary("ce", partial);
++            return None;
++        }
++        let Ok(range) = self.protected_range() else { return None };
++        let nothing = range.is_none();
++        let run = if self.kind == ChipKind::Puya {
++            nothing // Puya p24/p38: one rule, all 64 combinations decided
++        } else {
++            let bp_zero = self.sr & BP == 0;
++            if bp_zero != nothing {
++                self.unspec("prot.chip-erase-conflict"); // UC25HQ80's own statements disagree
++                return None;
++            }
++            bp_zero
++        };
++        if !run {
++            self.ignored_protected("ce");
++            return None;
++        }
++        mem.fill(0xff);
++        let us = self.us().ce;
++        self.start(CycleKind::Erase, us, 0, 0, 0);
++        Some((0, BYTES))
++    }
++
++    fn wrsr(&mut self, n: usize, partial: u8) {
++        match self.wel_set() {
++            None | Some(false) => return,
++            Some(true) => {}
++        }
++        let data = n - 1;
++        if partial != 0 || (data != 1 && data != 2) {
++            self.rejected_boundary("wrsr", partial);
++            return;
++        }
++        if self.unknown & (SRP0 | SRP1) != 0 {
++            self.unspec("wrsr.hw-protection");
++            return;
++        }
++        let srp = (if self.sr & SRP1 != 0 { 2 } else { 0 }) | (if self.sr & SRP0 != 0 { 1 } else { 0 });
++        if srp == 3 {
++            self.unspec("srp.otp");
++            return;
++        }
++        if srp == 2 || (srp == 1 && !self.wp) {
++            self.unknown |= WEL; // hardware/lock-down protected: not executed, WEL not stated
++            return;
++        }
++        let old = self.sr;
++        let mut next = (old & !LOW_WRITABLE) | (self.hdr[1] as u16 & LOW_WRITABLE);
++        let mut unknown_after = self.unknown;
++        if data == 2 {
++            let hi = ((self.hdr[2] as u16) << 8) & HIGH_WRITABLE;
++            next = (next & !HIGH_WRITABLE) | (hi & !LB) | (old & LB) | (hi & LB); // LB bits only go 0 -> 1
++        } else if self.kind == ChipKind::Puya {
++            next &= !ONE_BYTE_CLEARS; // Puya p26
++        } else {
++            unknown_after |= HIGH_WRITABLE; // UC: not stated
++        }
++        let in_flux = ((old ^ next) & (LOW_WRITABLE | HIGH_WRITABLE)) | (unknown_after & !self.unknown);
++        let us = self.us().wrsr;
++        self.start(CycleKind::Wrsr, us, next, unknown_after, in_flux);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::spichip_tables::{PUYA, UC25HQ80};
++
++    fn at(kind: ChipKind) -> Chip {
++        let mut c = Chip::new(kind, Timing::Typical);
++        c.set_clock(0, 100_000_000);
++        c
++    }
++    fn xfer(c: &mut Chip, mem: &mut Vec<u8>, tx: &[u8], read: usize) -> Vec<u8> {
++        c.select();
++        for &b in tx {
++            c.transfer(mem, b);
++        }
++        let out = (0..read).map(|_| c.transfer(mem, 0)).collect();
++        c.release(mem, 0);
++        out
++    }
++
++    /// Every one of the 64 BP4-BP0/CMP combinations selects exactly one row of each chip's protection table.
++    #[test]
++    fn protection_tables_decide_every_combination() {
++        for p in [&PUYA, &UC25HQ80] {
++            for rows in [p.cmp0, p.cmp1] {
++                for bp in 0..32u8 {
++                    let bits = [4, 3, 2, 1, 0].map(|k| ((bp >> k) & 1) as i8);
++                    let n = rows.iter().filter(|r| r.pat.iter().zip(bits.iter()).all(|(c, b)| *c == -1 || c == b)).count();
++                    assert_eq!(n, 1, "bp {bp:05b}");
++                }
++            }
++        }
++    }
++
++    /// Chip erase: the Puya table decides all 64 combinations; the UC25HQ80's statements conflict at exactly 14.
++    #[test]
++    fn chip_erase_rule_counts() {
++        for (kind, expect) in [(ChipKind::Puya, 0), (ChipKind::Uc25hq80, 14)] {
++            let mut conflicts = 0;
++            for cmp in 0..2u16 {
++                for bp in 0..32u16 {
++                    let mut c = at(kind);
++                    c.sr = (bp << 2) | (cmp << 14);
++                    let nothing = c.protected_range().unwrap().is_none();
++                    if kind == ChipKind::Uc25hq80 && ((c.sr & BP) == 0) != nothing {
++                        conflicts += 1;
++                    }
++                }
++            }
++            assert_eq!(conflicts, expect, "{kind:?}");
++        }
++    }
++
++    /// The datasheet figures (microseconds), literally, not derived from the generator's own source.
++    #[test]
++    fn datasheet_timing_figures() {
++        let p = (&PUYA.typical, &PUYA.maximum);
++        assert_eq!((p.0.pp, p.0.pe, p.0.se, p.0.be32, p.0.be64, p.0.ce, p.0.wrsr), (2000, 8000, 8000, 8000, 8000, 8000, 8000));
++        assert_eq!((p.1.pp, p.1.pe, p.1.se, p.1.be32, p.1.be64, p.1.ce, p.1.wrsr), (3000, 20000, 20000, 20000, 20000, 20000, 12000));
++        let u = (&UC25HQ80.typical, &UC25HQ80.maximum);
++        assert_eq!((u.0.pp, u.0.pe, u.0.se, u.0.be32, u.0.be64, u.0.ce, u.0.wrsr), (1500, 7000, 7000, 7000, 7000, 7000, 8000));
++        assert_eq!((u.1.pp, u.1.pe, u.1.se, u.1.be32, u.1.be64, u.1.ce, u.1.wrsr), (3000, 10000, 10000, 10000, 10000, 10000, 12000));
++        assert_eq!(PUYA.jedec, [0x85, 0x60, 0x14]);
++        assert_eq!(UC25HQ80.jedec, [0xb3, 0x60, 0x14]);
++    }
++
++    /// Without WREN nothing is programmed or erased, and no cycle starts (the original model programmed anyway).
++    #[test]
++    fn writes_need_wel() {
++        for kind in [ChipKind::Puya, ChipKind::Uc25hq80] {
++            let (mut c, mut mem) = (at(kind), vec![0x5a; FLASH_SIZE]);
++            xfer(&mut c, &mut mem, &[0x02, 0, 0, 0, 0x00], 0);
++            xfer(&mut c, &mut mem, &[0x20, 0, 0, 0], 0);
++            assert!(mem.iter().all(|&b| b == 0x5a) && !c.wip());
++            xfer(&mut c, &mut mem, &[0x06], 0);
++            assert_eq!(xfer(&mut c, &mut mem, &[0x05], 1), [0x02], "WEL set, not busy");
++            xfer(&mut c, &mut mem, &[0x20, 0, 0, 0], 0);
++            assert!(c.wip() && mem[0..4096].iter().all(|&b| b == 0xff));
++        }
++    }
++
++    /// A page program that runs past the end of its page wraps to the start of the same page.
++    #[test]
++    fn program_wraps_within_the_page() {
++        let (mut c, mut mem) = (at(ChipKind::Puya), vec![0xff; FLASH_SIZE]);
++        xfer(&mut c, &mut mem, &[0x06], 0);
++        xfer(&mut c, &mut mem, &[0x02, 0x00, 0x01, 0xfe, 1, 2, 3, 4], 0);
++        assert_eq!((mem[0x1fe], mem[0x1ff], mem[0x100], mem[0x101], mem[0x200]), (1, 2, 3, 4, 0xff));
++    }
++
++    /// Opcodes outside the model are recorded, answered 0xFF, and change nothing.
++    #[test]
++    fn unmodelled_opcodes_are_recorded() {
++        let (mut c, mut mem) = (at(ChipKind::Uc25hq80), vec![0xff; FLASH_SIZE]);
++        assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], 4), [0xff; 4]);
++        assert_eq!(c.events.not_modeled, 1);
++        assert_eq!(c.take_log(), ["nm.unique-sfdp"]);
++        assert_eq!(c.status(), (0, 0));
++    }
++}
+diff --git a/crates/fm1-soc/src/spiflash.rs b/crates/fm1-soc/src/spiflash.rs
+index 9c063e6..d0e3aee 100644
+--- a/crates/fm1-soc/src/spiflash.rs
++++ b/crates/fm1-soc/src/spiflash.rs
+@@ -18,6 +18,8 @@
+ //! half of its bytes changed, the rest as before), and nothing after it reaches the chip, as if
+ //! the power went there. With fm1-live's `--flash FILE` the next run boots from what was left.
+ 
++use crate::spichip::{Chip, ChipKind, Timing};
++
+ pub const SPI0_BASE: u32 = 0x11c00;
+ pub const FLASH_SIZE: usize = 1 << 20;
+ 
+@@ -45,6 +47,9 @@ pub struct SpiFlash {
+     pub ops: u32,
+     /// FM1_FLASH_CUT: the op that is cut half way; none reach the chip after it
+     pub cut_at: Option<u32>,
++    /// A datasheet-based chip (spichip.rs) in place of the original instantaneous model: None = original
++    /// behaviour (the default).
++    pub chip: Option<Chip>,
+ }
+ 
+ impl SpiFlash {
+@@ -65,6 +70,7 @@ impl SpiFlash {
+             revision: 0,
+             ops: 0,
+             cut_at: std::env::var("FM1_FLASH_CUT").ok().and_then(|v| v.parse().ok()),
++            chip: None,
+         }
+     }
+ 
+@@ -76,7 +82,43 @@ impl SpiFlash {
+ 
+     pub fn busy(&self) -> bool { self.cs_low }
+ 
++    /// Select a chip profile (None: the original model). A fresh chip: status 0, no cycle running.
++    pub fn set_chip(&mut self, chip: Option<(ChipKind, Timing)>) {
++        self.chip = chip.map(|(k, t)| Chip::new(k, t));
++        self.cs_low = false;
++    }
++
++    /// The SoC clock (cycle count, cycles per second) for the chip's cycle timing; the SoC calls it
++    /// before each chip-select or SPI0 write.
++    pub fn set_clock(&mut self, now: u64, hz: u64) {
++        if let Some(c) = &mut self.chip {
++            c.set_clock(now, hz);
++        }
++    }
++
++    /// Is a program/erase/write-status cycle running (the status register's WIP bit)? Always
++    /// false without a chip profile (the original model never reports busy).
++    pub fn wip(&mut self, now: u64, hz: u64) -> bool {
++        self.chip.as_mut().is_some_and(|c| {
++            c.set_clock(now, hz);
++            c.wip()
++        })
++    }
++
+     pub fn set_cs(&mut self, low: bool) {
++        if let Some(chip) = &mut self.chip {
++            if low && !self.cs_low {
++                chip.select();
++            } else if !low && self.cs_low {
++                if let Some((a, b)) = chip.release(&mut self.mem, 0) {
++                    self.ops += 1;
++                    self.changed = Some((a, b));
++                    self.revision = self.revision.wrapping_add(1);
++                }
++            }
++            self.cs_low = low;
++            return;
++        }
+         if !low && self.cs_low && self.trace && self.nbytes > 0 {
+             eprintln!("flash cmd {:02x} addr {:06x} bytes {}", self.cmd, self.addr, self.nbytes);
+         }
+@@ -108,6 +150,9 @@ impl SpiFlash {
+         if !self.cs_low {
+             return 0xff;
+         }
++        if let Some(chip) = &mut self.chip {
++            return chip.transfer(&self.mem, out);
++        }
+         let i = self.nbytes;
+         self.nbytes += 1;
+         if i == 0 {
+diff --git a/crates/fm1-soc/tests/chip_oracle.rs b/crates/fm1-soc/tests/chip_oracle.rs
+new file mode 100644
+index 0000000..56f7876
+--- /dev/null
++++ b/crates/fm1-soc/tests/chip_oracle.rs
+@@ -0,0 +1,342 @@
++//! Replays oracle transcripts (generated from the Stage A reference model, ci/machine/chipmodel.mjs) against
++//! the Rust chip state machine, two ways:
++//!   * `chip_driver`: `Chip` directly (select / transfer / release), including CS rising mid-byte;
++//!   * `soc_driver`: through the SoC's registers (GPIO PD0 chip select, SPI0 BUF/CON) with the SoC's
++//!     cycle counter as the clock: the path the firmware's CPU takes.
++//! The transcript file is named by FM1_CHIP_ORACLE (see gen-transcripts.mjs for the line formats).
++
++use fm1_core::Bus;
++use fm1_soc::{Chip, ChipKind, Soc, Timing, FLASH_SIZE};
++
++const SPI0: u32 = 0x11c00;
++const CS: u32 = 0x500c0;
++
++fn unhex(s: &str) -> Vec<u8> {
++    if s == "-" {
++        return Vec::new();
++    }
++    (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
++}
++
++fn fnv(a: &[u8]) -> u32 {
++    let mut h: u32 = 0x811c9dc5;
++    for &b in a {
++        h ^= b as u32;
++        h = h.wrapping_mul(0x01000193);
++    }
++    h
++}
++
++fn pattern() -> Vec<u8> {
++    (0..FLASH_SIZE).map(|i| (((i * 131 + (i >> 8) * 17) ^ 0x5a) & 0xff) as u8).collect()
++}
++
++trait Drv {
++    fn set_cycles(&mut self, cycles: u64);
++    /// Run one transaction: returns the bytes read and, for status reads, the model's unknown mask byte.
++    fn tx(&mut self, tx: &[u8], read: usize, partial: u8) -> (Vec<u8>, Option<u8>);
++    fn power(&mut self);
++    fn mem(&self) -> &[u8];
++    fn wip(&mut self) -> bool;
++    fn take_log(&mut self) -> Vec<&'static str>;
++}
++
++struct ChipDrv {
++    chip: Chip,
++    mem: Vec<u8>,
++    hz: u64,
++}
++impl Drv for ChipDrv {
++    fn set_cycles(&mut self, c: u64) {
++        self.chip.set_clock(c, self.hz);
++    }
++    fn tx(&mut self, tx: &[u8], read: usize, partial: u8) -> (Vec<u8>, Option<u8>) {
++        self.chip.select();
++        for &b in tx {
++            self.chip.transfer(&self.mem, b);
++        }
++        let out: Vec<u8> = (0..read).map(|_| self.chip.transfer(&self.mem, 0x00)).collect();
++        let unk = match tx.first() {
++            Some(0x05) => Some(self.chip.status().1 as u8),
++            Some(0x35) => Some((self.chip.status().1 >> 8) as u8),
++            _ => None,
++        };
++        self.chip.release(&mut self.mem, partial);
++        (out, unk)
++    }
++    fn power(&mut self) {
++        self.chip.power_cycle();
++    }
++    fn mem(&self) -> &[u8] {
++        &self.mem
++    }
++    fn wip(&mut self) -> bool {
++        self.chip.wip()
++    }
++    fn take_log(&mut self) -> Vec<&'static str> {
++        self.chip.take_log()
++    }
++}
++
++struct SocDrv {
++    soc: Soc,
++}
++impl Drv for SocDrv {
++    fn set_cycles(&mut self, c: u64) {
++        self.soc.periph.cycles = c;
++    }
++    fn tx(&mut self, tx: &[u8], read: usize, partial: u8) -> (Vec<u8>, Option<u8>) {
++        let s = &mut self.soc;
++        s.write32(CS, 0);
++        for &b in tx {
++            s.write32(SPI0, 0); // transmit mode
++            s.write32(SPI0 + 8, b as u32);
++        }
++        let mut out = Vec::new();
++        for _ in 0..read {
++            s.write32(SPI0, 0x1000); // receive mode: BUF returns the byte clocked in
++            s.write32(SPI0 + 8, 0);
++            out.push((s.read32(SPI0 + 8) & 0xff) as u8);
++        }
++        if partial != 0 {
++            // CS# rising mid-byte cannot happen on the byte-wide SPI0: hand the chip the event directly,
++            // then drop the GPIO line (the chip has nothing left to execute)
++            let f = &mut s.flash;
++            f.chip.as_mut().unwrap().release(&mut f.mem, partial);
++        }
++        s.write32(CS, 1);
++        (out, None)
++    }
++    fn power(&mut self) {
++        let (c, hz) = (self.soc.periph.cycles, self.soc.periph.hz);
++        self.soc.flash.set_clock(c, hz);
++        self.soc.flash.chip.as_mut().unwrap().power_cycle();
++    }
++    fn mem(&self) -> &[u8] {
++        &self.soc.flash.mem
++    }
++    fn wip(&mut self) -> bool {
++        let (c, hz) = (self.soc.periph.cycles, self.soc.periph.hz);
++        self.soc.flash.wip(c, hz)
++    }
++    fn take_log(&mut self) -> Vec<&'static str> {
++        self.soc.flash.chip.as_mut().unwrap().take_log()
++    }
++}
++
++#[derive(Default)]
++struct Report {
++    scenarios: usize,
++    transactions: usize,
++    array_checks: usize,
++    hashes: usize,
++    wip_checks: usize,
++    power: usize,
++    mismatches: Vec<String>,
++}
++
++fn replay(make: &dyn Fn(ChipKind, Timing, u64, bool, bool) -> Box<dyn Drv>) -> Report {
++    let path = std::env::var("FM1_CHIP_ORACLE").expect("FM1_CHIP_ORACLE must name the oracle transcript file (see gen-transcripts.mjs)");
++    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
++    let mut rep = Report::default();
++    let mut drv: Option<Box<dyn Drv>> = None;
++    let (mut name, mut hz, mut us_total) = (String::new(), 100_000_000u64, 0u64);
++    let mut bad = |rep: &mut Report, name: &str, ln: usize, what: String| {
++        if rep.mismatches.len() < 25 {
++            rep.mismatches.push(format!("{name} line {ln}: {what}"));
++        } else if rep.mismatches.len() == 25 {
++            rep.mismatches.push("... (more)".into());
++        }
++    };
++    let mut nbad = 0usize;
++    for (i, line) in text.lines().enumerate() {
++        let ln = i + 1;
++        let f: Vec<&str> = line.split(' ').collect();
++        match f[0] {
++            "S" => {
++                name = f[1].to_string();
++                let kind = if f[2] == "puya" { ChipKind::Puya } else { ChipKind::Uc25hq80 };
++                let timing = if f[3] == "typical" { Timing::Typical } else { Timing::Maximum };
++                hz = f[4].parse().unwrap();
++                let (wp, pat) = (f[5] == "1", f[6] == "pat");
++                drv = Some(make(kind, timing, hz, wp, pat));
++                us_total = 0;
++                rep.scenarios += 1;
++            }
++            "E" => drv = None,
++            "T" => {
++                let d = drv.as_mut().unwrap();
++                let adv: u64 = f[1].parse().unwrap();
++                us_total += adv;
++                d.set_cycles(us_total * (hz / 1_000_000));
++                let res = line.split(" => ").nth(1).unwrap();
++                if res == "ADV" {
++                    continue;
++                }
++                let (partial, read): (u8, usize) = (f[2].parse().unwrap(), f[3].parse().unwrap());
++                let tx = unhex(f[4]);
++                rep.transactions += 1;
++                let (out, unk) = d.tx(&tx, read, partial);
++                let log = d.take_log();
++                let r: Vec<&str> = res.split(' ').collect();
++                if r[0] == "OK" {
++                    if !log.is_empty() {
++                        nbad += 1;
++                        bad(&mut rep, &name, ln, format!("oracle OK, chip recorded events {log:?}"));
++                    }
++                    let (eout, eunk) = (unhex(r[1]), unhex(r[2]));
++                    if read > 0 && !eout.is_empty() {
++                        let status = matches!(tx[0], 0x05 | 0x35);
++                        for k in 0..read {
++                            let mask = if status { !eunk[k] } else { 0xff };
++                            if (out[k] ^ eout[k]) & mask != 0 {
++                                nbad += 1;
++                                bad(&mut rep, &name, ln, format!("tx {} read byte {k}: chip {:02x}, oracle {:02x} (unknown mask {:02x})", f[4], out[k], eout[k], if status { eunk[k] } else { 0 }));
++                                break;
++                            }
++                        }
++                        if let (Some(u), true) = (unk, status) {
++                            if eunk.iter().any(|&e| e != u) {
++                                nbad += 1;
++                                bad(&mut rep, &name, ln, format!("tx {} unknown mask: chip {u:02x}, oracle {}", f[4], r[2]));
++                            }
++                        }
++                    }
++                } else if r[0] == "ERR" {
++                    if log != [r[2]] {
++                        nbad += 1;
++                        bad(&mut rep, &name, ln, format!("tx {} oracle refuses with {} {}, chip recorded {log:?}", f[4], r[1], r[2]));
++                    }
++                } else {
++                    panic!("bad result {res}");
++                }
++            }
++            "P" => {
++                let d = drv.as_mut().unwrap();
++                d.power();
++                let log = d.take_log();
++                rep.power += 1;
++                let ok = line.ends_with("=> OK");
++                let exp: Vec<&str> = if ok { vec![] } else { vec!["nm.power-loss"] };
++                if log != exp {
++                    nbad += 1;
++                    bad(&mut rep, &name, ln, format!("power cycle: oracle {}, chip events {log:?}", &line[4..]));
++                }
++            }
++            "A" => {
++                let d = drv.as_mut().unwrap();
++                let (a, l): (usize, usize) = (f[1].parse().unwrap(), f[2].parse().unwrap());
++                rep.array_checks += 1;
++                if d.mem()[a..a + l] != unhex(f[3])[..] {
++                    nbad += 1;
++                    bad(&mut rep, &name, ln, format!("array {a:#x}+{l}: chip {:02x?}.. oracle {}", &d.mem()[a..(a + l).min(a + 8)], &f[3][..f[3].len().min(16)]));
++                }
++            }
++            "D" => {
++                let d = drv.as_mut().unwrap();
++                rep.hashes += 1;
++                let h = fnv(d.mem());
++                if format!("{h:08x}") != f[1] {
++                    nbad += 1;
++                    bad(&mut rep, &name, ln, format!("final array hash: chip {h:08x}, oracle {}", f[1]));
++                }
++            }
++            "W" => {
++                let d = drv.as_mut().unwrap();
++                rep.wip_checks += 1;
++                if d.wip() != (f[1] == "1") {
++                    nbad += 1;
++                    bad(&mut rep, &name, ln, format!("WIP: chip {}, oracle {}", !(f[1] == "1"), f[1]));
++                }
++            }
++            other => panic!("unknown transcript line kind {other}"),
++        }
++    }
++    let _ = nbad;
++    rep
++}
++
++fn run(make: &dyn Fn(ChipKind, Timing, u64, bool, bool) -> Box<dyn Drv>, label: &str) {
++    let r = replay(make);
++    eprintln!(
++        "{label}: {} scenarios, {} transactions, {} array checks, {} final hashes, {} WIP checks, {} power cycles; mismatches: {}",
++        r.scenarios, r.transactions, r.array_checks, r.hashes, r.wip_checks, r.power, r.mismatches.len()
++    );
++    assert!(r.mismatches.is_empty(), "{label}: oracle mismatches:\n{}", r.mismatches.join("\n"));
++    assert!(r.scenarios > 300 && r.transactions > 50_000, "{label}: transcript too small to mean anything");
++}
++
++#[test]
++#[ignore = "needs the oracle transcript: set FM1_CHIP_ORACLE and run with --ignored"]
++fn chip_driver_matches_the_oracle() {
++    run(
++        &|kind, timing, hz, wp, pat| {
++            let mut chip = Chip::new(kind, timing);
++            chip.set_wp(wp);
++            Box::new(ChipDrv { chip, mem: if pat { pattern() } else { vec![0xff; FLASH_SIZE] }, hz })
++        },
++        "chip driver",
++    );
++}
++
++#[test]
++#[ignore = "needs the oracle transcript: set FM1_CHIP_ORACLE and run with --ignored"]
++fn soc_registers_match_the_oracle() {
++    run(
++        &|kind, timing, hz, wp, pat| {
++            let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
++            soc.periph.hz = hz;
++            soc.flash.set_chip(Some((kind, timing)));
++            soc.flash.chip.as_mut().unwrap().set_wp(wp);
++            if pat {
++                soc.flash.mem.copy_from_slice(&pattern());
++            }
++            Box::new(SocDrv { soc })
++        },
++        "SoC driver",
++    );
++}
++
++/// The default must stay the original model: no chip, instantaneous, program without WEL still programs.
++#[test]
++fn default_is_the_original_model() {
++    let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
++    assert!(soc.flash.chip.is_none());
++    let mut cmd = |soc: &mut Soc, bytes: &[u8]| {
++        soc.write32(CS, 0);
++        for &b in bytes {
++            soc.write32(SPI0 + 8, b as u32);
++        }
++        soc.write32(CS, 1);
++    };
++    cmd(&mut soc, &[0x02, 0x00, 0x10, 0x00, 0xa5]); // program with no WREN: the original model programs it anyway
++    assert_eq!(soc.flash.mem[0x1000], 0xa5);
++    cmd(&mut soc, &[0x06]);
++    soc.write32(CS, 0);
++    soc.write32(SPI0 + 8, 0x05);
++    soc.write32(SPI0, 0x1000);
++    soc.write32(SPI0 + 8, 0);
++    assert_eq!(soc.read32(SPI0 + 8) & 0xff, 0x02, "status shows WEL and never WIP");
++    soc.write32(CS, 1);
++    assert!(!soc.flash.wip(0, 1_000_000), "the original model never reports a write cycle");
++}
++
++/// A chip profile selected after boot answers the right JEDEC id and gives WIP for a real duration.
++#[test]
++fn a_profile_changes_the_id_and_takes_time() {
++    for (kind, id) in [(ChipKind::Puya, [0x85, 0x60, 0x14]), (ChipKind::Uc25hq80, [0xb3, 0x60, 0x14])] {
++        let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
++        soc.periph.hz = 100_000_000;
++        soc.flash.set_chip(Some((kind, Timing::Typical)));
++        let mut drv = SocDrv { soc };
++        assert_eq!(drv.tx(&[0x9f], 3, 0).0, id);
++        drv.tx(&[0x06], 0, 0);
++        drv.tx(&[0x20, 0, 0, 0], 0, 0);
++        assert!(drv.wip(), "WIP right after the erase is accepted");
++        let typ_us: u64 = if kind == ChipKind::Puya { 8000 } else { 7000 };
++        drv.set_cycles(typ_us * 100 - 1);
++        assert!(drv.wip(), "still busy one cycle before the datasheet typical time");
++        drv.set_cycles(typ_us * 100);
++        assert!(!drv.wip(), "done exactly at the typical time");
++    }
++}
+diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
+index fa2ab51..0354718 100644
+--- a/crates/fm1-web/src/lib.rs
++++ b/crates/fm1-web/src/lib.rs
+@@ -263,6 +263,45 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
+ pub extern "C" fn fm1_flash_revision() -> u32 { machine().map_or(0, |m| m.soc.flash.revision) }
+ #[no_mangle]
+ pub extern "C" fn fm1_flash_busy() -> u32 { machine().is_some_and(|m| m.soc.flash.busy()) as u32 }
++/// Flash chip profile (HEATWAVS): 0 = the original instantaneous model (default), 1 = Puya P25Q80H,
++/// 2 = UC25HQ80. Call before the first render. Returns 0 on success, 1 if the id is unknown.
++#[no_mangle]
++pub extern "C" fn fm1_flash_chip(id: u32) -> u32 {
++    let timing = machine().and_then(|m| m.soc.flash.chip.as_ref().map(|c| c.timing())).unwrap_or(fm1_soc::Timing::Typical);
++    let chip = match id {
++        0 => None,
++        1 => Some((fm1_soc::ChipKind::Puya, timing)),
++        2 => Some((fm1_soc::ChipKind::Uc25hq80, timing)),
++        _ => return 1,
++    };
++    machine().map_or(1, |m| {
++        m.soc.flash.set_chip(chip);
++        0
++    })
++}
++/// Chip cycle timing: 0 = datasheet typical (default), 1 = datasheet maximum. Needs a chip profile.
++#[no_mangle]
++pub extern "C" fn fm1_flash_timing(mode: u32) -> u32 {
++    let t = match mode {
++        0 => fm1_soc::Timing::Typical,
++        1 => fm1_soc::Timing::Maximum,
++        _ => return 1,
++    };
++    machine().and_then(|m| m.soc.flash.chip.as_mut()).map_or(1, |c| {
++        c.set_timing(t);
++        0
++    })
++}
++/// The chip status register's WIP bit at the current emulated time (0 without a chip profile).
++#[no_mangle]
++pub extern "C" fn fm1_flash_wip() -> u32 {
++    machine().is_some_and(|m| m.soc.flash.wip(m.soc.periph.cycles, m.soc.periph.hz)) as u32
++}
++/// Chip events: which = 0 commands ignored as unspecified by the datasheet, 1 opcodes outside the model.
++#[no_mangle]
++pub extern "C" fn fm1_flash_events(which: u32) -> u32 {
++    machine().and_then(|m| m.soc.flash.chip.as_ref()).map_or(0, |c| if which == 0 { c.events.unspecified } else { c.events.not_modeled })
++}
+ #[no_mangle]
+ pub extern "C" fn fm1_flash_restore(ptr: *mut u8, len: u32) -> u32 {
+     let bytes = unsafe { Vec::from_raw_parts(ptr, len as usize, len as usize) };

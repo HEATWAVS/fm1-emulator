@@ -1,0 +1,131 @@
+{
+  "_about": "Pins for ci/engine/build.mjs: the exact upstream source, the verified patch, and what the build must produce. See ci/engine/README.md.",
+  "upstream": {
+    "url": "https://github.com/joakimeriksson/fm1-emu",
+    "tag": "v0.3.0",
+    "commit": "631b790b191e87ea8b796d351cfe7e61ab366794",
+    "license": "MIT"
+  },
+  "patch": {
+    "file": "chip-profiles.patch",
+    "sha256": "2038e078fce718d3ac37a9ffdfdee8f7d7cddb6a38b756c92ef744d5826693e4",
+    "note": "applies to the LF blobs of the pinned commit with core.autocrlf=false"
+  },
+  "generatedTablesSha256": "5d24d3674947d8ef5687f365bf79e89daa5fa8f8a50fdc5ccf4c0c6618142176",
+  "workspaceFiles": [
+    "crates/fm1-core/build.rs",
+    "crates/fm1-core/Cargo.toml",
+    "crates/fm1-core/src/jit/x64.rs",
+    "crates/fm1-core/src/jit.rs",
+    "crates/fm1-core/src/jit_a64.rs",
+    "crates/fm1-core/src/jit_wasm.rs",
+    "crates/fm1-core/src/jit_x64.rs",
+    "crates/fm1-core/src/lib.rs",
+    "crates/fm1-isa/Cargo.toml",
+    "crates/fm1-isa/src/fpu.rs",
+    "crates/fm1-isa/src/generated_isa.rs",
+    "crates/fm1-isa/src/lib.rs",
+    "crates/fm1-live/src/panel.rs",
+    "crates/fm1-live/src/panel_smk.rs",
+    "crates/fm1-soc/Cargo.toml",
+    "crates/fm1-soc/src/flaky.rs",
+    "crates/fm1-soc/src/fwsc.rs",
+    "crates/fm1-soc/src/lcd.rs",
+    "crates/fm1-soc/src/lib.rs",
+    "crates/fm1-soc/src/machine.rs",
+    "crates/fm1-soc/src/p33.rs",
+    "crates/fm1-soc/src/periph.rs",
+    "crates/fm1-soc/src/ram.rs",
+    "crates/fm1-soc/src/script.rs",
+    "crates/fm1-soc/src/smk.rs",
+    "crates/fm1-soc/src/spiflash.rs",
+    "crates/fm1-soc/src/usb.rs",
+    "crates/fm1-web/Cargo.toml",
+    "crates/fm1-web/src/lib.rs"
+  ],
+  "workspaceMembers": [
+    "crates/fm1-isa",
+    "crates/fm1-core",
+    "crates/fm1-soc",
+    "crates/fm1-web"
+  ],
+  "recipe": {
+    "command": "cargo build --release -p fm1-web --target wasm32-unknown-unknown --offline",
+    "env": {
+      "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+      "RUSTFLAGS": " -Cllvm-args=-inline-threshold=2000 -Clink-arg=--export-table -Clink-arg=--growable-table"
+    },
+    "from": "web/build.sh at the pinned tag"
+  },
+  "toolchains": {
+    "rustc 1.97.1 (8bab26f4f 2026-07-14)": {
+      "host": "x86_64-pc-windows-msvc",
+      "unpatchedWasmSha256": "943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe",
+      "patchedWasmSha256": "acf09d9498b35f951c011928e87f2528f78431eb46ca98d9c0e20a4ce2f0d9fa",
+      "patchedWasmBytes": 2719859
+    }
+  },
+  "expectedExports": [
+    "__indirect_function_table",
+    "fm1_ahead",
+    "fm1_alloc",
+    "fm1_analog",
+    "fm1_bench_script",
+    "fm1_board",
+    "fm1_boot",
+    "fm1_boot_fwsc",
+    "fm1_enc",
+    "fm1_flash",
+    "fm1_flash_base",
+    "fm1_flash_busy",
+    "fm1_flash_chip",
+    "fm1_flash_events",
+    "fm1_flash_len",
+    "fm1_flash_restore",
+    "fm1_flash_revision",
+    "fm1_flash_timing",
+    "fm1_flash_wip",
+    "fm1_halted",
+    "fm1_idle_ms",
+    "fm1_jit",
+    "fm1_key",
+    "fm1_lcd",
+    "fm1_lcd_revision",
+    "fm1_leds",
+    "fm1_load_syx",
+    "fm1_midi",
+    "fm1_minsns",
+    "fm1_ms",
+    "fm1_out_l",
+    "fm1_out_r",
+    "fm1_pads",
+    "fm1_pot",
+    "fm1_profile",
+    "fm1_profile_report",
+    "fm1_render",
+    "fm1_velocity",
+    "fm1_xip",
+    "fm1_xip_len",
+    "memory",
+    "panel_board",
+    "panel_draw",
+    "panel_enc_id",
+    "panel_height",
+    "panel_hit",
+    "panel_hit_y",
+    "panel_lcd",
+    "panel_leds",
+    "panel_set",
+    "panel_slide",
+    "panel_width"
+  ],
+  "addedExports": [
+    "fm1_flash_chip",
+    "fm1_flash_events",
+    "fm1_flash_timing",
+    "fm1_flash_wip"
+  ],
+  "expectedImports": [
+    "env.fm1_jit_compile"
+  ]
+}

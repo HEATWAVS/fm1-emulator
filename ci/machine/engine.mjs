@@ -4,8 +4,8 @@
 // that file exports, and reports capabilities. A test that needs a feature the engine does not
 // have must say so (see requires() in machine.mjs) instead of passing without testing it.
 //
-// Today the engine is this repository's site/emulator/fm1_web.wasm, loaded read-only. A later
-// engine (for example a separately built upstream one) plugs in through the same adapter.
+// By default the engine is this repository's site/emulator/fm1_web.wasm, loaded read-only. Another engine (the
+// chip-profile engine from ci/engine/build.mjs, never committed) plugs in through the same adapter: loadEngine({ wasmPath }).
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -59,6 +59,11 @@ export async function loadEngine({ wasmPath = resolve(EMULATOR_DIR, "fm1_web.was
       selectFlashId: has("fm1_flash_id_set"),          // native: an engine export (none yet)
       flashIdPatch: flashIdLayout !== null,           // runtime patch on a validated build (flashid.mjs)
       flashFaultInjection: has("fm1_flash_fault"),
+      // A chip-profile engine (built by ci/engine/build.mjs; the shipped engine has none of these). Profile selection,
+      // the status register's WIP bit (distinct from fm1_flash_busy, which is chip-select), and the unspecified/unmodelled counters.
+      selectFlashChip: has("fm1_flash_chip", "fm1_flash_timing"),
+      flashWip: has("fm1_flash_wip"),
+      flashEvents: has("fm1_flash_events"),
       resetCounter: has("fm1_resets"),
     },
     instantiate() {

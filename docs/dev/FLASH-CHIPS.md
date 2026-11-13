@@ -93,8 +93,9 @@ Upstream `spiflash.rs`: ID only from `9F`; `05h` returns only WEL, `35h` returns
 erase/program instant; `WREN`/`WRDI`; `03h`/`0Bh`; `20h` and `D8h` erase (need WEL); `02h` program ANDs bits but **does not
 check WEL**, does not wrap in the page and is unbounded; no `01h`, `52h`, `60h`/`C7h`, `81h`; no protection. The fork's engine is
 a black box: its `fm1_flash_busy()` was 1 in 16 of 1,100 audio quanta, all where flash was being written, consistent with
-chip-select rather than a 2-20 ms write cycle (observation, inferential). These are the gaps Component 4 Stages B-D would close
-in an engine we can rebuild; none of them can change in the shipped `fm1_web.wasm`.
+chip-select rather than a 2-20 ms write cycle (observation, inferential). None of these gaps can change in the shipped `fm1_web.wasm`.
+The chip-profile test engine (`ci/engine/`, Component 4 Stage C) closes them for the modelled commands, in a separate never-committed
+build selected with `flashChip`; see `ci/engine/README.md` for behaviour and limitations (array-at-accept, no USB host, XIP-tail difference).
 
 ## What real firmware does (AURORA fm1_flash.h)
 
@@ -115,3 +116,4 @@ clock.advance(1500);
 chip.readStatus();                                     // { value, unknown }
 ```
 Tests: `node ci/machine/chiptests.mjs` (75 tests, milliseconds); also part of the machine self-test quick tier.
+The same behaviour runs in the chip-profile engine (a Rust port, `fm1-soc/src/spichip.rs`); its tables are generated from `chipspec.mjs`, so the datasheet data has one source.

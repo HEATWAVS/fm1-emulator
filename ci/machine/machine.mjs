@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { FLASH_SIZE, SECTOR, diffSectors, corruptSectors } from "./flash.mjs";
 import { FlashIdError, parseFlashId, applyFlashId, readFlashId } from "./flashid.mjs";
+import { FlashChipError, resolveFlashChipOptions, applyFlashChip } from "./flashchip.mjs";
 
 export const SAMPLE_RATE = 44100;           // the engine renders at 44.1 kHz
 const QUANTUM = 128;                         // frames per fm1_render call, as the app does
@@ -40,9 +41,19 @@ export class Fm1Machine {
    *            Unset (the default): nothing is touched and the engine's own ID is used, exactly as before.
    *            ID selection only: no other chip behaviour changes. Refused (FlashIdError) on an engine
    *            build without a validated layout, and on a non-FM-1 board.
+   *   flashChip   "puya" | "uc25hq80" | "legacy" (flashchip.mjs): a datasheet-based chip model (status register, WEL, WIP,
+   *            protection, page wrap, cycle timing). Needs a chip-profile engine (ci/engine/build.mjs; capability selectFlashChip).
+   *            Unset (the default) = "legacy": the engine's original instantaneous model, nothing called, behaviour unchanged.
+   *            Selected before the first instruction runs; there is no way to change it on a running machine.
+   *   flashTiming "typical" (default with a chip) | "maximum": the datasheet cycle times. Only with a chip profile.
+   *            flashChip cannot be combined with flashId. Bad or conflicting input is refused before anything boots.
    */
-  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true, flashId = null } = {}) {
+  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true, flashId = null, flashChip = null, flashTiming = null } = {}) {
     requires(engine, "boot", "flashRead");
+    const chipChoice = resolveFlashChipOptions({ flashChip, flashTiming, flashId });         // reject bad input before booting
+    if (chipChoice.chip !== "legacy" && !engine.capabilities.selectFlashChip) {
+      throw new FlashChipError("unsupported-engine", `engine "${engine.name}" has no flash chip profiles (build one with node ci/engine/build.mjs)`);
+    }
     const preset = flashId === null || flashId === undefined ? null : parseFlashId(flashId);   // reject bad input before booting
     if (preset && !engine.flashIdLayout) {
       throw new FlashIdError("unsupported-engine", `engine "${engine.name}" (sha256 ${engine.wasmSha256.slice(0, 12)}…) has no validated flash-ID layout`);
@@ -74,13 +85,25 @@ export class Fm1Machine {
       if (x.fm1_board() !== 0) throw new FlashIdError("unsupported-board", "flash ID selection is for the FM-1 board only");
       flashIdInfo = applyFlashId(x, engine.flashIdLayout, preset);
     }
-    const machine = new Fm1Machine(engine, x, pkg, { mhz, jit, usb, flashId: preset ? preset.name : null });
+    let flashChipInfo = null;
+    if (chipChoice.chip !== "legacy") {          // likewise before the first instruction runs, and after any flash restore
+      if (x.fm1_board() !== 0) throw new FlashChipError("unsupported-board", "flash chip profiles are for the FM-1 board only");
+      flashChipInfo = applyFlashChip(x, chipChoice);
+    }
+    const machine = new Fm1Machine(engine, x, pkg, { mhz, jit, usb, flashId: preset ? preset.name : null, flashChip: chipChoice.chip === "legacy" ? null : chipChoice.chip, flashTiming: chipChoice.timing });
     machine.flashIdInfo = flashIdInfo;         // null unless an ID was selected
+    machine.flashChipInfo = flashChipInfo;     // null unless a chip profile was selected: { chip, timing, jedec }
     return machine;
   }
 
   /** The ID the engine's flash chip currently reports ({bytes, name, address}); needs a validated engine build. */
   flashId() { return readFlashId(this.x, this.engine.flashIdLayout); }
+
+  /** The flash chip's WIP bit now (a program/erase/write-status cycle is running). Distinct from observe().flashBusy, which is chip-select. */
+  flashWip() { requires(this.engine, "flashWip"); return this.x.fm1_flash_wip() === 1; }
+
+  /** Commands the selected chip profile ignored because its datasheet is silent/contradictory, and opcodes outside the model. */
+  flashEvents() { requires(this.engine, "flashEvents"); return { unspecified: this.x.fm1_flash_events(0), notModeled: this.x.fm1_flash_events(1) }; }
 
   // ------------------------------------------------------------ running
   /** Advance the machine by `ms` of emulated time (stops early if the CPU halts). */
@@ -118,6 +141,8 @@ export class Fm1Machine {
       board: x.fm1_board(),
       flashRevision: x.fm1_flash_revision(),
       flashBusy: x.fm1_flash_busy() === 1,
+      // only on a chip-profile engine, so the default engine's observation keeps exactly its old shape
+      ...(this.engine.capabilities.flashWip ? { flashWip: x.fm1_flash_wip() === 1 } : {}),
       lcdRevision: x.fm1_lcd_revision(),
       lcdColours: new Set(lcd).size,
       lcdHash: sha(new Uint8Array(lcd.buffer, lcd.byteOffset, lcd.byteLength)).slice(0, 16),

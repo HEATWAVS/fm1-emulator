@@ -49,12 +49,40 @@ memory untouched (`FlashIdError`: `unsupported-engine`, `layout-mismatch`, `no-l
 `unsupported-board`, `invalid-id`). Without the option nothing is touched. A rebuilt engine must be
 re-validated before its hash is added.
 
-## Flash-chip reference model (datasheet oracle, not part of the running emulator)
+## Choosing a flash chip PROFILE (realistic chip behaviour; needs a chip-profile engine)
+
+```bash
+node ci/engine/build.mjs --upstream /path/to/fm1-emu        # once: builds ci/engine/out/fm1_web_chips.wasm (never committed)
+node ci/machine/cli.mjs --fw quadro-fm1 --seconds 4 --flash-chip puya                          # Puya P25Q80H reference profile, typical timing
+node ci/machine/cli.mjs --fw quadro-fm1 --seconds 4 --flash-chip uc25hq80 --flash-timing maximum
+node ci/machine/cli.mjs --fw felucca --engine some/other_engine.wasm --flash-chip puya      # any engine that exports the chip functions
+```
+
+In code: `Fm1Machine.boot(engine, pkg, { flashChip: "puya" | "uc25hq80" | "legacy", flashTiming: "typical" | "maximum" })`;
+`machine.flashChipInfo` says what was selected, `machine.flashWip()` reads the chip's WIP bit (distinct from `observe().flashBusy`,
+which is chip-select), `machine.flashEvents()` counts commands the model ignored as unspecified and opcodes outside it.
+
+- **This is not `flashId`.** `flashId` changes the three ID bytes of the *shipped* engine by a runtime patch and nothing else.
+  `flashChip` selects a datasheet-based chip model (status register, WEL, WIP, protection, page wrap, cycle timing) inside the
+  chip-profile engine. The two cannot be combined (`id-conflict`); `flashId` is unchanged.
+- **Default = `legacy`:** the engine's original instantaneous model, no export is called, behaviour is exactly as before. Explicit
+  `"legacy"` is the same. `flashTiming` needs a chip profile (`timing-needs-chip`); `typical` is its default.
+- **Before the first render, only:** the profile is selected while the machine boots (after any flash restore, before the first instruction);
+  there is no API to change the chip of a running machine. `powerCycle()` keeps it, or `powerCycle({ flashChip })` swaps it while "off"
+  (status bits such as BP/CMP are not carried over: a new machine starts with status 0).
+- **Refusals** (`FlashChipError`, before anything boots): `invalid-chip`, `invalid-timing`, `timing-needs-chip`, `id-conflict`,
+  `unsupported-engine` (the engine lacks `fm1_flash_chip`/`fm1_flash_timing`: the shipped engine does), `unsupported-board` (not the FM-1),
+  `engine-refused`. The CLI exits 2 with the reason.
+- Behaviour differences from the original model, the array-at-accept simplification and the known limitations: `ci/engine/README.md`.
+
+## Flash-chip reference model (datasheet oracle)
 
 `chipspec.mjs` + `chipmodel.mjs` model the Puya P25Q80H (documented reference profile; the physical older chip's
 variant is unresolved) and the UC25HQ80 from their datasheets, every behaviour cited by page and section. Time is a
 caller-supplied clock; timing is typical (default) or maximum. Where the datasheets are silent or contradict themselves it
-throws `UnspecifiedBehavior` instead of guessing. Tests: `node ci/machine/chiptests.mjs` (also in the quick tier).
+throws `UnspecifiedBehavior` instead of guessing. Tests: `node ci/machine/chiptests.mjs` (also in the quick tier). It is a pure-JavaScript
+specification and test oracle; the running emulator uses a Rust port of it only in the chip-profile engine (`ci/engine/`), verified against it
+by replaying oracle transcripts.
 Research, sources and the list of ambiguities: `docs/dev/FLASH-CHIPS.md`.
 
 ## Pieces
@@ -92,7 +120,7 @@ Recorded as capabilities and `KNOWN LIMITATION` self-tests, so nothing passes by
 - Count **watchdog/chip resets**.
 - **Bricking**: the boot ROM/loader is not emulated; corrupting the boot area (`0x0`) or the chip-key
   sector (`0xFF000`) has no effect here.
-- The real update loader/USB update path; flash timing (erase/program are instant).
+- The real update loader/USB update path; flash timing (erase/program are instant on the shipped engine; a chip-profile engine with `flashChip` gives datasheet timing).
 - A **hung** verdict: a static screen waiting for input looks identical to a stuck loop. A test must
   send a stimulus and judge the response for its own firmware.
 
@@ -104,8 +132,8 @@ code sector halts the CPU (see `selftest.mjs`).
 | Command | What runs | Time |
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
-| `npm run test:machine:quick` | quick tier alone (94 tests: 19 harness incl. one real Felucca boot + 75 chip-model) | ~5 s |
-| `npm run test:machine` | full tier: every test (105 = 30 harness + 75 chip-model), including the slower firmware-behaviour checks | ~90 s |
+| `npm run test:machine:quick` | quick tier alone (102 tests: 27 harness incl. one real Felucca boot + 75 chip-model) | ~6 s |
+| `npm run test:machine` | full tier: every test (119 = 44 harness + 75 chip-model), including the slower firmware-behaviour checks. 5 of them need the chip-profile engine and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 114 run | ~90 s (~140 s with the chip engine) |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the
 quick tier is a subset. The full tier is not run by `npm test` or CI; it is validated on Windows (Node 24 and

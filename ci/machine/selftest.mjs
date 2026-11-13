@@ -18,7 +18,8 @@
 // limitation is real; if an engine ever starts modelling the thing, they fail and tell you the
 // harness can now test it.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadEngine, EMULATOR_DIR, FLASH_ID_LAYOUTS } from "./engine.mjs";
@@ -27,8 +28,15 @@ import { FlashIdError, FLASH_IDS, parseFlashId, locateLiveFlashId, applyFlashId 
 import { watch } from "./monitor.mjs";
 import { FLASH_SIZE, SECTOR, packRecords, unpackRecords, parseCorruption, corruptSectors, diffSectors } from "./flash.mjs";
 import { registerChipTests } from "./chiptests.mjs";
+import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions } from "./flashchip.mjs";
+import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
+import { renderTables } from "../engine/tables.mjs";
 
 const engine = await loadEngine();
+// The chip-profile engine is built on demand by ci/engine/build.mjs and is never committed. Tests that need it are
+// full-tier only and are reported as SKIPPED (never as passed) when it has not been built.
+const chipEnginePath = defaultEnginePath();
+const chipEngine = existsSync(chipEnginePath) ? await loadEngine({ wasmPath: chipEnginePath, name: "fm1_web_chips.wasm" }) : null;
 const fw = (name) => new Uint8Array(readFileSync(resolve(EMULATOR_DIR, "../fw", name)));
 const FELUCCA = fw("felucca-1.8.2-beta.fwsc");
 const AURORA = new Uint8Array(readFileSync(resolve(EMULATOR_DIR, "../archive/AURORA/aurora-0.9.1.fwsc")));
@@ -42,6 +50,7 @@ const QUICK_ONLY = args.includes("--quick");
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn, quick: false });
 test.quick = (name, fn) => tests.push({ name, fn, quick: true });
+test.chip = (name, fn) => tests.push({ name, fn, quick: false, needsChipEngine: true });
 
 test.quick("engine capabilities are detected from its exports", () => {
   const c = engine.capabilities;
@@ -50,6 +59,7 @@ test.quick("engine capabilities are detected from its exports", () => {
   assert.equal(c.selectFlashId, false);
   assert.equal(c.flashFaultInjection, false);
   assert.equal(c.resetCounter, false);
+  for (const k of ["selectFlashChip", "flashWip", "flashEvents"]) assert.equal(c[k], false, `${k}: the shipped engine has no chip profiles`);
   assert.throws(() => requires(engine, "selectFlashId"), /lacks: selectFlashId/);
 });
 
@@ -339,10 +349,210 @@ test("flash ID: CLI default output is unchanged; the option and invalid IDs beha
   assert.equal(bad.status, 2); assert.match(bad.stderr, /unsupported flash ID/);
 });
 
+
+// ======================================================================= flash chip profiles (Component 4, Stage C2)
+// Chip PROFILES (flashchip.mjs) are a different thing from the ID-only option above: a datasheet-based chip model inside a
+// chip-profile engine. The configuration tests below need no such engine (they use the shipped engine and stand-ins that
+// record the calls the harness makes); the live tests at the end need the engine built by ci/engine/build.mjs.
+const chipCode = (c) => (e) => e instanceof FlashChipError && e.code === c;
+/** The shipped engine with the chip exports stubbed: records every call, so order and arguments can be checked. */
+function stubChipEngine(calls, { board = 0, chipRc = 0, timingRc = 0 } = {}) {
+  return {
+    ...engine, name: "stub-chip-engine",
+    capabilities: { ...engine.capabilities, selectFlashChip: true },
+    instantiate: () => {
+      const real = engine.instantiate();
+      return { ...real, fm1_board: () => board,
+        fm1_flash_chip: (id) => { calls.push(["chip", id]); return chipRc; },
+        fm1_flash_timing: (mode) => { calls.push(["timing", mode]); return timingRc; },
+        fm1_render: (...a) => { calls.push(["render"]); return real.fm1_render(...a); } };
+    },
+  };
+}
+
+test.quick("flash chip: the shipped engine has no chip profiles; the default boots exactly as before, nothing is called", () => {
+  const m = Fm1Machine.boot(engine, FELUCCA);
+  assert.equal(m.flashChipInfo, null);
+  assert.equal(m.options.flashChip, null);
+  assert.equal(m.options.flashTiming, null);
+  assert.ok(!("flashWip" in m.observe()), "the observation keeps its old shape without chip support");
+  assert.throws(() => m.flashWip(), /lacks: flashWip/);
+  assert.throws(() => m.flashEvents(), /lacks: flashEvents/);
+  assert.deepEqual(Object.keys(FLASH_CHIPS), ["legacy", "puya", "uc25hq80"]);
+  assert.equal(FLASH_CHIPS.legacy.id, 0, "id 0 is the original model: the default");
+});
+
+test.quick("flash chip: explicit legacy is the default: engine memory identical, no chip exports needed", () => {
+  const snap = (opts) => new Uint8Array(Fm1Machine.boot(engine, FELUCCA, opts).x.memory.buffer).slice();
+  assert.deepEqual(snap({ flashChip: "legacy" }), snap({}));
+  assert.deepEqual(resolveFlashChipOptions({}), { chip: "legacy", timing: null });
+  assert.deepEqual(resolveFlashChipOptions({ flashChip: "LEGACY" }), { chip: "legacy", timing: null });
+  assert.deepEqual(resolveFlashChipOptions({ flashChip: "original" }), { chip: "legacy", timing: null });
+});
+
+test.quick("flash chip: profile and timing names are parsed strictly; aliases match flashId's", () => {
+  for (const [input, name] of [["puya", "puya"], ["PUYA", "puya"], ["old", "puya"], [" uc25hq80 ", "uc25hq80"], ["new", "uc25hq80"], ["legacy", "legacy"]]) assert.equal(parseFlashChip(input), name, input);
+  for (const bad of ["", "eb6014", "0x856014", "p25q80h", "newer", 1, 0, null, undefined, {}, ["puya"], true]) assert.throws(() => parseFlashChip(bad), chipCode("invalid-chip"), JSON.stringify(bad));
+  assert.equal(parseFlashTiming("typical"), "typical");
+  assert.equal(parseFlashTiming("MAXIMUM"), "maximum");
+  for (const bad of ["", "min", "minimum", "fast", 0, 1, null, undefined, {}]) assert.throws(() => parseFlashTiming(bad), chipCode("invalid-timing"), JSON.stringify(bad));
+  assert.deepEqual(resolveFlashChipOptions({ flashChip: "puya" }), { chip: "puya", timing: "typical" }, "typical is the timing default");
+  assert.deepEqual(resolveFlashChipOptions({ flashChip: "new", flashTiming: "maximum" }), { chip: "uc25hq80", timing: "maximum" });
+});
+
+test.quick("flash chip: invalid, conflicting or unsupported options are refused before anything boots", () => {
+  let booted = false;
+  const tripwire = { ...engine, instantiate: () => { booted = true; throw new Error("booted"); } };
+  const refuse = (opts, c) => assert.throws(() => Fm1Machine.boot(tripwire, FELUCCA, opts), chipCode(c), JSON.stringify(opts));
+  refuse({ flashChip: "bogus" }, "invalid-chip");
+  refuse({ flashChip: 7 }, "invalid-chip");
+  refuse({ flashChip: "puya", flashTiming: "fast" }, "invalid-timing");
+  refuse({ flashTiming: "typical" }, "timing-needs-chip");
+  refuse({ flashChip: "legacy", flashTiming: "maximum" }, "timing-needs-chip");
+  refuse({ flashChip: "puya", flashId: "puya" }, "id-conflict");
+  refuse({ flashChip: "uc25hq80", flashId: "new" }, "id-conflict");
+  refuse({ flashChip: "puya" }, "unsupported-engine");                  // a valid request, but this engine has no profiles
+  assert.equal(booted, false, "nothing was instantiated for any of these");
+  assert.throws(() => Fm1Machine.boot(engine, FELUCCA, { flashChip: "uc25hq80" }), chipCode("unsupported-engine"));
+});
+
+test.quick("flash chip: selection calls the engine's exports with the right ids, before the first render; legacy and flashId call none", () => {
+  for (const [opts, expected] of [
+    [{ flashChip: "puya" }, [["chip", 1], ["timing", 0]]],
+    [{ flashChip: "puya", flashTiming: "maximum" }, [["chip", 1], ["timing", 1]]],
+    [{ flashChip: "uc25hq80" }, [["chip", 2], ["timing", 0]]],
+    [{ flashChip: "new", flashTiming: "maximum" }, [["chip", 2], ["timing", 1]]],
+    [{ flashChip: "legacy" }, []],
+    [{}, []],
+    [{ flashId: "uc25hq80" }, []],
+  ]) {
+    const calls = [], m = Fm1Machine.boot(stubChipEngine(calls), FELUCCA, opts);
+    assert.deepEqual(calls, expected, `${JSON.stringify(opts)}: selected during boot, nothing rendered yet`);
+    m.run(10);
+    assert.deepEqual(calls.slice(0, expected.length), expected, "the selection precedes every render");
+    assert.ok(calls.length > expected.length && calls.slice(expected.length).every((c) => c[0] === "render"), "only renders follow");
+    const chosen = opts.flashChip && opts.flashChip !== "legacy";
+    assert.deepEqual(m.flashChipInfo === null ? null : [m.flashChipInfo.chip, m.flashChipInfo.timing], chosen ? [parseFlashChip(opts.flashChip), opts.flashTiming ?? "typical"] : null);
+  }
+  assert.deepEqual(Fm1Machine.boot(stubChipEngine([]), FELUCCA, { flashChip: "puya" }).flashChipInfo.jedec, [0x85, 0x60, 0x14]);
+  assert.deepEqual(Fm1Machine.boot(stubChipEngine([]), FELUCCA, { flashChip: "uc25hq80" }).flashChipInfo.jedec, [0xb3, 0x60, 0x14]);
+});
+
+test.quick("flash chip: an engine that refuses the profile, or a board other than the FM-1, stops the boot", () => {
+  assert.throws(() => Fm1Machine.boot(stubChipEngine([], { chipRc: 1 }), FELUCCA, { flashChip: "puya" }), chipCode("engine-refused"));
+  assert.throws(() => Fm1Machine.boot(stubChipEngine([], { timingRc: 1 }), FELUCCA, { flashChip: "puya" }), chipCode("engine-refused"));
+  const calls = [];
+  assert.throws(() => Fm1Machine.boot(stubChipEngine(calls, { board: 1 }), FELUCCA, { flashChip: "puya" }), chipCode("unsupported-board"));
+  assert.deepEqual(calls, [], "no profile was selected on the wrong board");
+  assert.equal(Fm1Machine.boot(stubChipEngine([], { board: 1 }), FELUCCA).flashChipInfo, null, "without the option nothing is checked or touched");
+});
+
+test.quick("flash chip: a power cycle keeps the chip and timing; they can be swapped while the unit is off", () => {
+  const calls = [], eng = stubChipEngine(calls), m = Fm1Machine.boot(eng, FELUCCA, { flashChip: "puya", flashTiming: "maximum" });
+  const again = m.powerCycle();
+  assert.deepEqual([again.flashChipInfo.chip, again.flashChipInfo.timing], ["puya", "maximum"]);
+  assert.deepEqual(calls.filter((c) => c[0] !== "render").slice(2), [["chip", 1], ["timing", 1]]);
+  const swapped = m.powerCycle({ flashChip: "uc25hq80", flashTiming: "typical" });
+  assert.deepEqual([swapped.flashChipInfo.chip, swapped.flashChipInfo.timing], ["uc25hq80", "typical"]);
+  const back = m.powerCycle({ flashChip: null, flashTiming: null });
+  assert.equal(back.flashChipInfo, null, "back to the original model");
+  assert.throws(() => m.powerCycle({ flashChip: null }), chipCode("timing-needs-chip"), "timing without a chip is refused here too");
+});
+
+test.quick("chip engine pin: the patch and the tables generated from chipspec.mjs are the ones the pin records (one source of truth)", () => {
+  const sha = (b) => createHash("sha256").update(b).digest("hex");
+  assert.equal(sha(readFileSync(resolve(import.meta.dirname, "../engine", PIN.patch.file))), PIN.patch.sha256, "ci/engine/chip-profiles.patch changed: update pin.json deliberately");
+  assert.equal(sha(renderTables()), PIN.generatedTablesSha256, "chipspec.mjs changed: rebuild the engine (node ci/engine/build.mjs --test) and update pin.json");
+  assert.equal(PIN.upstream.commit, "631b790b191e87ea8b796d351cfe7e61ab366794");
+  assert.equal(PIN.expectedExports.length, 52);
+  for (const n of PIN.addedExports) assert.ok(PIN.expectedExports.includes(n), n);
+  assert.ok(!engine.exportNames.has("fm1_flash_chip"), "the shipped engine was not replaced");
+});
+
+test("flash chip: CLI default output unchanged; bad, conflicting and unsupported options exit 2 with a reason", () => {
+  const cli = (...args) => spawnSync(process.execPath, [resolve(import.meta.dirname, "cli.mjs"), ...args], { encoding: "utf8", env: { ...process.env, FM1_CHIP_ENGINE: resolve(import.meta.dirname, "no-such-engine.wasm") } });
+  const plain = JSON.parse(cli("--fw", "felucca", "--seconds", "1", "--json").stdout);
+  assert.ok(!("flashChip" in plain) && !("flashChip" in plain.options), "no chip keys unless asked");
+  for (const [args, reason] of [[["--flash-chip", "bogus"], /unsupported flash chip.*invalid-chip/], [["--flash-timing", "typical"], /timing-needs-chip/], [["--flash-chip", "puya", "--flash-timing", "fast"], /invalid-timing/],
+    [["--flash-chip", "puya", "--flash-id", "old"], /id-conflict/], [["--flash-chip", "puya"], /no flash chip profiles.*unsupported-engine/]]) {
+    const r = cli("--fw", "felucca", "--seconds", "1", ...args);
+    assert.equal(r.status, 2, args.join(" ")); assert.match(r.stderr, reason, args.join(" "));
+  }
+  assert.notEqual(cli("--fw", "felucca", "--engine", "no-such.wasm").status, 0);
+});
+
+// ---- live tests: need the chip-profile engine built by ci/engine/build.mjs (SKIPPED, loudly, when it is not there)
+const chipRun = (id, options, seconds = 4) => {
+  const m = Fm1Machine.boot(chipEngine, id === "felucca" ? FELUCCA : QUADRO, options), r = watch(m, { seconds });
+  return { verdict: r.verdict, lcdHash: r.final.lcdHash, flashHash: m.flashHash(), flashRevision: r.final.flashRevision, emulatedMs: r.emulatedMs, idleMs: r.final.idleMs, m };
+};
+const strip = ({ m, ...rest }) => rest;
+
+test.chip("flash chip (live): the built engine is the one the pin describes: exact exports and imports, hash for its toolchain", () => {
+  const v = verifyEngineFile(chipEnginePath);
+  assert.deepEqual({ missing: v.missing, unexpected: v.unexpected, importsOk: v.importsOk }, { missing: [], unexpected: [], importsOk: true });
+  assert.notEqual(v.hash, "MISMATCH", `${v.sha256} is not the verified hash for ${v.rustc}`);
+  for (const k of ["selectFlashChip", "flashWip", "flashEvents"]) assert.equal(chipEngine.capabilities[k], true, k);
+  assert.notEqual(chipEngine.wasmSha256, engine.wasmSha256, "a separate engine: the shipped one is untouched");
+  assert.equal(chipEngine.flashIdLayout, null, "no flash-ID runtime-patch layout for this build (it has native profiles instead)");
+});
+
+// usb: false on BOTH engines: the chip engine is built from upstream v0.3.0, which has no fm1_usb_plug (the shipped engine's
+// virtual USB host), so with the harness's default usb: true the two would differ for that reason alone.
+test.chip("flash chip (live): the default profile on the chip engine behaves like the shipped engine, USB host off (Felucca, quadro-fm1: LCD, flash, writes, clock)", () => {
+  assert.equal(chipEngine.exportNames.has("fm1_usb_plug"), false, "known: v0.3.0 has no USB host plug");
+  for (const [id, pkg] of [["felucca", FELUCCA], ["quadro", QUADRO]]) {
+    const shipped = runCase(`${id}|shipped-3s-nousb`, pkg, { usb: false }, 3);
+    const chips = strip(chipRun(id, { usb: false }, 3)), explicit = strip(chipRun(id, { usb: false, flashChip: "legacy" }, 3));
+    assert.deepEqual(chips, { verdict: shipped.verdict, lcdHash: shipped.lcdHash, flashHash: shipped.flashHash, flashRevision: shipped.flashRevision, emulatedMs: shipped.emulatedMs, idleMs: shipped.idleMs }, `${id}: default on the chip engine == the shipped engine`);
+    assert.deepEqual(explicit, chips, `${id}: explicit legacy too`);
+  }
+});
+
+test.chip("flash chip (live): selecting a profile takes effect (quadro-fm1 saves settings on Puya, not on UC25HQ80); the default stays legacy", () => {
+  const legacy = chipRun("quadro", {}), puya = chipRun("quadro", { flashChip: "puya" }), uc = chipRun("quadro", { flashChip: "uc25hq80" });
+  assert.ok(legacy.flashRevision > 0, "legacy writes its settings");
+  assert.ok(puya.flashRevision > 0, "the Puya profile reports 85 60 14: recognised, so it still writes");
+  assert.equal(uc.flashRevision, 0, "the UC25HQ80 profile reports B3 60 14: not recognised, nothing written");
+  assert.notEqual(uc.flashHash, puya.flashHash);
+  assert.equal(legacy.m.flashChipInfo, null);
+  assert.deepEqual(puya.m.flashChipInfo, { chip: "puya", timing: "typical", jedec: [0x85, 0x60, 0x14] });
+  assert.deepEqual(uc.m.flashChipInfo.jedec, [0xb3, 0x60, 0x14]);
+});
+
+test.chip("flash chip (live): WIP is its own export (never set by the legacy model) and follows the selected timing (maximum holds it longer than typical)", () => {
+  const wipSamples = (options) => {
+    const m = Fm1Machine.boot(chipEngine, QUADRO, options);
+    let wip = 0, busy = 0;
+    for (let i = 0; i < 1400; i++) { m.run(3); wip += m.flashWip(); busy += m.observe().flashBusy; }   // a sample every 3 ms of audio time
+    return { wip, busy, m };
+  };
+  const legacy = wipSamples({}), typ = wipSamples({ flashChip: "puya", flashTiming: "typical" }), max = wipSamples({ flashChip: "puya", flashTiming: "maximum" }), again = wipSamples({ flashChip: "puya", flashTiming: "maximum" });
+  assert.ok(legacy.m.changedSectors().length > 0, "the firmware did write flash in this window");
+  assert.equal(legacy.wip, 0, "the original model never reports a write cycle: WIP is not chip-select, whose export is unchanged");
+  assert.ok(typ.wip > 0, "a flash cycle was seen in progress under the Puya profile");
+  assert.ok(max.wip > typ.wip, `maximum timing holds WIP longer: ${typ.wip} -> ${max.wip} samples`);
+  assert.equal(again.wip, max.wip, "deterministic");
+  assert.deepEqual(typ.m.flashEvents(), { unspecified: 0, notModeled: 1 }, "quadro-fm1 issues one opcode the model does not cover; it is counted, not guessed");
+});
+
+test.chip("flash chip (live): a power cycle keeps the profile; options are still validated on the chip engine", () => {
+  const m = Fm1Machine.boot(chipEngine, FELUCCA, { flashChip: "uc25hq80", flashTiming: "maximum" });
+  const again = m.powerCycle();
+  assert.deepEqual([again.flashChipInfo.chip, again.flashChipInfo.timing], ["uc25hq80", "maximum"]);
+  assert.deepEqual(m.powerCycle({ flashChip: "puya" }).flashChipInfo.jedec, [0x85, 0x60, 0x14]);
+  assert.throws(() => Fm1Machine.boot(chipEngine, FELUCCA, { flashChip: "puya", flashId: "puya" }), chipCode("id-conflict"));
+  assert.throws(() => Fm1Machine.boot(chipEngine, FELUCCA, { flashChip: "bogus" }), chipCode("invalid-chip"));
+  assert.equal(chipEngine.exportNames.has("fm1_flash_busy"), true, "the chip-select busy export is still there, unchanged");
+});
+
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance), quick tier
 
-const selected = QUICK_ONLY ? tests.filter((t) => t.quick) : tests;
+const inTier = QUICK_ONLY ? tests.filter((t) => t.quick) : tests;
+const skipped = inTier.filter((t) => t.needsChipEngine && !chipEngine);
+const selected = inTier.filter((t) => !skipped.includes(t));
 const tier = QUICK_ONLY ? "quick" : "full";
+for (const t of skipped) console.log(`SKIP ${t.name}\n     (no chip-profile engine at ${chipEnginePath}: build it with node ci/engine/build.mjs; a skipped test is not a passed test)`);
 if (!selected.length) { console.log(`FAIL: no machine tests selected (${tier} tier)`); process.exit(1); }
 
 let failed = 0;
@@ -358,6 +568,6 @@ for (const { name, fn } of selected) {
   }
 }
 const seconds = ((performance.now() - started) / 1000).toFixed(1);
-console.log(`\n${selected.length - failed}/${selected.length} passed (${tier} tier${QUICK_ONLY ? `, ${tests.length} tests in the full suite` : ""}, ${seconds} s) — engine ${engine.name} sha256 ${engine.wasmSha256.slice(0, 16)}…`);
+console.log(`\n${selected.length - failed}/${selected.length} passed${skipped.length ? `, ${skipped.length} SKIPPED (chip-profile engine not built)` : ""} (${tier} tier${QUICK_ONLY ? `, ${tests.length} tests in the full suite` : ""}, ${seconds} s) — engine ${engine.name} sha256 ${engine.wasmSha256.slice(0, 16)}…${chipEngine && !QUICK_ONLY ? ` + chip engine ${chipEngine.wasmSha256.slice(0, 16)}…` : ""}`);
 if (!failed) console.log(`PASS: ${selected.length} machine tests (${tier})`);
 process.exit(failed ? 1 : 0);

@@ -10,7 +10,7 @@ never modify `fm1_web.wasm` or licence/notice files without explicit approval; e
 
 **Order revised 2026-11-13** (selectable flash IDs moved up: a validated runtime patch of the existing
 engine made the Rust build unnecessary for a first version). **Revised again** when Component 4 was staged: the isolated Rust
-engine build is now Stage 4B, fault injection is Component 5, scenario tests 6, boot area 7.
+engine build is now Stage 4B, fault injection is Component 5, scenario tests 6, boot area 7. **Revised 2026-11-13 (Stage C approved in steps C0-C4):** the Rust port and the harness integration (old 4C and 4D) became Stage C, steps C0-C4.
 
 | # | Component | Status | Needs |
 |---|---|---|---|
@@ -18,25 +18,28 @@ engine build is now Stage 4B, fault injection is Component 5, scenario tests 6, 
 | 2 | **Selectable flash ID** (old `85 60 14` / new `B3 60 14`) by validated runtime patch, harness only | **Done**, commit `9f6c78f` | |
 | 3 | **Machine self-test in the test workflow:** quick tier in `npm test` (20 s hard limit), full tier as `npm run test:machine` | **Done**, commit `69afefa` | Full tier in CI deferred until validated on macOS/Linux (see below) |
 | 4 | **Realistic flash-chip behaviour** (busy/timing, WEL, page-program rules, erases, status registers, protection, Puya vs UC25HQ80). Staged: | | |
-| 4A | JS **reference model + conformance tests** from the two datasheets (`chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs`, `FLASH-CHIPS.md`); typical timing default, maximum as stress profile, caller-supplied clock; refuses to guess | **Done, awaiting commit** | |
-| 4B | Isolated build of the upstream Rust engine beside `fm1_web.wasm`, parity-checked against it | Proposed | Approval to install the Rust `wasm32-unknown-unknown` target; vendoring decision (DECISIONS D2); or the fork author's engine source |
-| 4C | Port the chip model into the isolated engine's `spiflash.rs` behind a profile switch (default = today's instant behaviour); native flash-ID export; checked differentially against 4A; needs a clock hook in `lib.rs`/`periph.rs` for WIP timing | Proposed | 4B |
-| 4D | Harness integration: adapter capability, `--flash-chip` CLI option; the Component 2 runtime patch stays for the shipped engine | Proposed | 4C |
-| 5 | Flash fault injection (power cut at op N, failed write, bit flips, stuck busy) | Proposed | 4C; upstream `spiflash.rs` power-cut code is the starting point |
+| 4A | JS **reference model + conformance tests** from the two datasheets (`chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs`, `FLASH-CHIPS.md`); typical timing default, maximum as stress profile, caller-supplied clock; refuses to guess | **Done**, commit `be69973` | |
+| 4B | Isolated build of the upstream Rust engine (v0.3.0, commit `631b790`) beside `fm1_web.wasm`, parity-checked against it | **Done** (scratch, outside the repo): the build is now reproducible by `ci/engine/build.mjs`; parity result in TESTING.md | |
+| C0 | Read-only clock investigation: can the chip's WIP timing use the SoC cycle counter? | **Done**: yes (ARCHITECTURE.md, "Chip-profile engine") | |
+| C1 | Port the chip model into the isolated engine (`spichip.rs`) behind a profile switch, default = original behaviour; oracle transcripts replayed by Rust host tests | **Done** (patch `ci/engine/chip-profiles.patch`) | |
+| C2 | Integration: reproducible build script + pins, tables generated from `chipspec.mjs`, harness options `flashChip`/`flashTiming`, CLI `--flash-chip`/`--flash-timing`/`--engine`, tests, docs (this was old 4D) | **Done** (see `git log`) | |
+| C3 | Conformance and failure-scenario tests against the live chip-profile engine (WEL gating, page wrap, protection, erase, WIP polling duration, rejected writes, unspecified-behaviour counters) | Proposed | C2 |
+| C4 | Firmware behaviour tests under each profile (AURORA/quadro-fm1/Felucca...), incl. host cost of long WIP polls | Proposed | C3 |
+| 5 | Flash fault injection (power cut at op N, failed write, bit flips, stuck busy; mid-cycle array state, which the chip-profile engine simplifies, see D33) | Proposed | C3; upstream `spiflash.rs` power-cut code is the starting point |
 | 6 | Scenario/recovery tests (failed update, corrupted flash, reset recovery) in `npm test` | Proposed | 5 |
 | 7 | Boot-area / brick emulation | Research only | Boot ROM + loader behaviour, probably not public |
 
 **ID selection is not chip emulation.** Component 2 changes only the 3 bytes the flash chip returns
 to a JEDEC read (`0x9F`). Everything else about the chip (timing, status bits, other commands,
-protection) is unchanged in the running emulator; Component 4 Stage A specifies it (as a reference model, not yet in
-the engine) and Stages B-D would bring it into an engine we can rebuild.
+protection) is unchanged in the **shipped** emulator and engine. Component 4 Stage A specifies it (a reference model) and Stage C brings it into a
+separately built, never-committed test engine (`ci/engine/`), selected with `flashChip`; the shipped `fm1_web.wasm` is unchanged.
 
 Follow-ups to Component 3 (not scheduled): run the full machine tier in CI (`release.yml`) once it has been
 validated on macOS and Linux; a manifest-driven suite runner so a firmware project's `make test` can run
 many scenarios with one command (the CLI in `ci/machine/cli.mjs` is the integration point today).
 
-**Stage A is a specification, not an emulator feature.** The reference model is tested against the datasheets only; the
-running emulator behaves exactly as before. The physical older chip variant is unresolved (FLASH-CHIPS.md).
+**The chip-profile engine is a test tool, not an emulator feature.** The shipped emulator behaves exactly as before. The chip model rests on the
+datasheets (Stage A) and is replayed against by oracle transcripts (Stage C). The physical older chip variant is unresolved (FLASH-CHIPS.md).
 
 Also open: "hung" detection needs a per-firmware stimulus/response check (not a verdict in v1);
 an ID selector in the app UI is not part of any component yet.
