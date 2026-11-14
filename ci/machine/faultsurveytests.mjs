@@ -213,6 +213,36 @@ export function registerFaultSurveyLiveTests(testChip, { chipEngine, shipped, pk
     assert.ok(m.x.fm1_halted() === 0, "the machine was not harmed");
   });
 
+  T("D-1: a 16-bit store the CPU executes at the edge of RAM is stored in range and does nothing out of range, and never aborts the emulator (the write16 bound)", () => {
+    // The CPU is the only path to Bus::write16 (the test bus has a 32-bit write only), so this boots a raw 18-byte program with the engine's existing exports: r5 = [r0 + 0x10]; r3 = [r0 + 0x14]; [r5] = r3 (16-bit store); spin.
+    // The test puts the target address and the value in RAM through the test bus first. (Encodings: `R = [rB + #i]` and its half-word store form, as `d5 ec 10 2e` / `d7 ec 51 38` in fm1-soc's machine tests.)
+    const PARAMS = 0x01c7fc00, FIRST = 0x01c00000, LAST_WORD = 0x01cffffc;
+    const program = [0xd0, 0xec, 0x00, 0x51, 0xd0, 0xec, 0x04, 0x31, 0xd0, 0xed, 0x51, 0x30, 0x60, 0xff, 0x00, 0x20, 0xfd, 0xff];
+    const store16 = (target, value) => {
+      const x = chipEngine.instantiate();
+      x.fm1_jit(0, 16);
+      const image = new Uint8Array(0x1000);
+      image.set(program, 0x120);
+      const p = x.fm1_alloc(image.length);
+      new Uint8Array(x.memory.buffer, p, image.length).set(image);
+      x.fm1_boot(p, image.length, 0x02000120, 100);
+      x.fm1_test_bus_write32(PARAMS + 0x10, target);
+      x.fm1_test_bus_write32(PARAMS + 0x14, value);
+      x.fm1_render(512, 100000);                          // before the fix an out-of-range target aborted here (a wasm `unreachable`)
+      return { halted: x.fm1_halted(), word: (a) => x.fm1_test_bus_read32(a) >>> 0 };
+    };
+    for (const [target, atFirst, atLast] of [[0x01c00000, 0x0000beef, 0], [0x01c00002, 0xbeef0000, 0], [0x01cffffe, 0, 0xbeef0000]]) {
+      const r = store16(target, 0x1234beef);
+      assert.equal(r.halted, 0, `in range ${target.toString(16)}: the program ran on`);
+      assert.deepEqual([r.word(FIRST), r.word(LAST_WORD)], [atFirst, atLast], `in range ${target.toString(16)}: the low 16 bits were stored, only there`);
+    }
+    for (const target of [0x01bffffe, 0x01bffffc, 0x01bfffff, 0x01fffffe]) {         // below RAM (the wasm32 wrap of the old bound for ...fffe), odd, and unmapped below the XIP window
+      const r = store16(target, 0x1234beef);
+      assert.equal(r.halted, 0, `out of range ${target.toString(16)}: no abort, no fault`);
+      assert.deepEqual([r.word(FIRST), r.word(LAST_WORD)], [0, 0], `out of range ${target.toString(16)}: nothing in RAM was touched`);
+    }
+  });
+
   T("D-1: an all-zero flash no longer aborts the emulator (the CPU runs on through the zeros and halts only after about 20 emulated seconds at minutes of run time, so this runs 20 ms: the shipped engine traps within them); the unmodified shipped engine still traps", () => {
     const old = Fm1Machine.boot(shipped, quadro, { usb: false, sectors: zeroFlash() });
     assert.throws(() => old.run(20), (e) => e instanceof WebAssembly.RuntimeError, "the shipped engine (never modified) still traps");
