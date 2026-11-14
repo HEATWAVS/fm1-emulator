@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { FLASH_SIZE, SECTOR, diffSectors, corruptSectors } from "./flash.mjs";
 import { FlashIdError, parseFlashId, applyFlashId, readFlashId } from "./flashid.mjs";
-import { FlashChipError, resolveFlashChipOptions, applyFlashChip, parseFlashChip } from "./flashchip.mjs";
+import { FlashChipError, resolveFlashChipOptions, applyFlashChip, applyFlashUid, parseFlashChip, parseFlashUid } from "./flashchip.mjs";
 
 export const SAMPLE_RATE = 44100;           // the engine renders at 44.1 kHz
 const QUANTUM = 128;                         // frames per fm1_render call, as the app does
@@ -50,12 +50,20 @@ export class Fm1Machine {
    *   flashNvStatus  the chip's non-volatile status bits (value | unknown << 16, from fm1_flash_nv_status) as they were when the unit
    *            was switched off; powerCycle() passes it for you when the same chip profile is kept. Needs a chip profile and an engine
    *            with the flashNv capability. Not stored in `options`.
+   *   flashUid  the chip's 128-bit unique ID that 4Bh (Read Unique ID) returns: 32 hex digits or 16 bytes in transmission order. A TEST FIXTURE: the
+   *            value is per device and in neither datasheet, so there is none unless you give one (without it 4Bh answers FF and counts the read as unknown).
+   *            Needs a chip profile and an engine with the flashUid capability; stored in `options`, so powerCycle() keeps it for the same chip.
    */
-  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true, flashId = null, flashChip = null, flashTiming = null, flashNvStatus = null } = {}) {
+  static boot(engine, pkg, { mhz = 100, sectors = null, jit = false, usb = true, flashId = null, flashChip = null, flashTiming = null, flashNvStatus = null, flashUid = null } = {}) {
     requires(engine, "boot", "flashRead");
     const chipChoice = resolveFlashChipOptions({ flashChip, flashTiming, flashId });         // reject bad input before booting
     if (chipChoice.chip !== "legacy" && !engine.capabilities.selectFlashChip) {
       throw new FlashChipError("unsupported-engine", `engine "${engine.name}" has no flash chip profiles (build one with node ci/engine/build.mjs)`);
+    }
+    const uidHex = flashUid === null || flashUid === undefined ? null : parseFlashUid(flashUid);
+    if (uidHex !== null) {
+      if (chipChoice.chip === "legacy") throw new FlashChipError("uid-needs-chip", "flashUid applies to a chip profile; the legacy model's 4Bh answer is its own fixed pattern");
+      if (!engine.capabilities.flashUid) throw new FlashChipError("unsupported-engine", `engine "${engine.name}" cannot take a unique-ID fixture (rebuild it: node ci/engine/build.mjs)`);
     }
     const nvGiven = flashNvStatus !== null && flashNvStatus !== undefined;
     if (nvGiven) {
@@ -99,8 +107,9 @@ export class Fm1Machine {
       if (x.fm1_board() !== 0) throw new FlashChipError("unsupported-board", "flash chip profiles are for the FM-1 board only");
       flashChipInfo = applyFlashChip(x, chipChoice);
       if (nvGiven && x.fm1_flash_nv_restore(flashNvStatus >>> 0) !== 0) throw new FlashChipError("engine-refused", "the engine refused the chip's non-volatile status");
+      if (uidHex !== null) applyFlashUid(x, uidHex);
     }
-    const machine = new Fm1Machine(engine, x, pkg, { mhz, jit, usb, flashId: preset ? preset.name : null, flashChip: chipChoice.chip === "legacy" ? null : chipChoice.chip, flashTiming: chipChoice.timing });
+    const machine = new Fm1Machine(engine, x, pkg, { mhz, jit, usb, flashId: preset ? preset.name : null, flashChip: chipChoice.chip === "legacy" ? null : chipChoice.chip, flashTiming: chipChoice.timing, flashUid: uidHex });
     machine.flashIdInfo = flashIdInfo;         // null unless an ID was selected
     machine.flashChipInfo = flashChipInfo;     // null unless a chip profile was selected: { chip, timing, jedec }
     return machine;
@@ -111,6 +120,9 @@ export class Fm1Machine {
 
   /** The flash chip's WIP bit now (a program/erase/write-status cycle is running). Distinct from observe().flashBusy, which is chip-select. */
   flashWip() { requires(this.engine, "flashWip"); return this.x.fm1_flash_wip() === 1; }
+
+  /** 4Bh Read Unique ID reads answered without a unique-ID fixture (the bytes were 0xFF and unknown). */
+  flashUidUnknownReads() { requires(this.engine, "flashEvents"); return this.x.fm1_flash_events(3); }
 
   /** Commands the selected chip profile ignored because its datasheet is silent/contradictory, and opcodes outside the model. */
   flashEvents() {
@@ -210,12 +222,13 @@ export class Fm1Machine {
     const merged = new Map([...sectors, ...extra].map((s) => [s.at, s]));
     // The same chip profile stays the same physical chip: its non-volatile status bits (BP, CMP, SRP, QE, LB) survive power-off, WEL does not.
     // A different chip swapped in while off starts with a fresh status. (A cycle still running is treated as completing: power loss mid-cycle is not modelled.)
-    let nv = {};
-    if (this.flashChipInfo && this.engine.capabilities.flashNv && !("flashNvStatus" in overrides)) {
-      const next = "flashChip" in overrides ? (overrides.flashChip == null ? "legacy" : parseFlashChip(overrides.flashChip)) : this.flashChipInfo.chip;
-      if (next === this.flashChipInfo.chip) nv = { flashNvStatus: this.x.fm1_flash_nv_status() >>> 0 };
-    }
-    return Fm1Machine.boot(this.engine, this.pkg, { ...this.options, ...overrides, ...nv, sectors: [...merged.values()] });
+    const next = "flashChip" in overrides ? (overrides.flashChip == null ? "legacy" : parseFlashChip(overrides.flashChip)) : (this.flashChipInfo ? this.flashChipInfo.chip : "legacy");
+    const sameChip = !!this.flashChipInfo && next === this.flashChipInfo.chip;
+    let carry = {};
+    if (sameChip && this.engine.capabilities.flashNv && !("flashNvStatus" in overrides)) carry.flashNvStatus = this.x.fm1_flash_nv_status() >>> 0;
+    // the unique ID is factory-set and read-only, so it stays with the same chip; a different chip swapped in while off has its own (none, unless given)
+    if (!sameChip && this.options.flashUid && !("flashUid" in overrides)) carry.flashUid = null;
+    return Fm1Machine.boot(this.engine, this.pkg, { ...this.options, ...overrides, ...carry, sectors: [...merged.values()] });
   }
 }
 

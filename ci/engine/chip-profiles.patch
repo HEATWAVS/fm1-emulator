@@ -36,10 +36,10 @@ index b342349..426523d 100644
              }
 diff --git a/crates/fm1-soc/src/spichip.rs b/crates/fm1-soc/src/spichip.rs
 new file mode 100644
-index 0000000..adcd3e1
+index 0000000..d713bc9
 --- /dev/null
 +++ b/crates/fm1-soc/src/spichip.rs
-@@ -0,0 +1,758 @@
+@@ -0,0 +1,872 @@
 +//! Datasheet-based SPI NOR chip state machine (HEATWAVS Stage C1), used by `SpiFlash` when a
 +//! chip profile is selected. The default (no profile) is the original instantaneous model.
 +//!
@@ -110,6 +110,9 @@ index 0000000..adcd3e1
 +    pub not_modeled: u32,
 +    /// the most recent opcode counted in `not_modeled` (0 if none)
 +    pub last_not_modeled: u8,
++    /// 4Bh Read Unique ID reads answered without a configured ID fixture: the datasheets print no value, so the bytes are 0xFF and
++    /// unknown (reported, not invented)
++    pub uid_unknown_reads: u32,
 +    /// ids of the most recent events (behaviour ids from chipspec.mjs), oldest dropped
 +    pub log: Vec<&'static str>,
 +}
@@ -122,6 +125,8 @@ index 0000000..adcd3e1
 +    Ignore,
 +    Rdsr(u8),
 +    Rdid,
++    /// 4Bh Read Unique ID: four dummy bytes, then the 128-bit ID
++    Ruid,
 +    Read03,
 +    Read0b,
 +    /// executes when CS rises
@@ -163,6 +168,11 @@ index 0000000..adcd3e1
 +    used: [bool; PAGE],
 +    /// unspecified-event guard for the "read past the ID" case (once per transaction)
 +    id_extra: bool,
++    /// guard: count a 4Bh read without a fixture once per transaction
++    uid_counted: bool,
++    /// The 128-bit unique ID 4Bh transmits, byte 0 (bits 127-120) first. A caller-supplied fixture: the value is per device and in neither
++    /// datasheet, so there is none unless one is set (and none is ever invented).
++    uid: Option<[u8; 16]>,
 +    pub events: Events,
 +}
 +
@@ -183,9 +193,15 @@ index 0000000..adcd3e1
 +            latch: [0xff; PAGE],
 +            used: [false; PAGE],
 +            id_extra: false,
++            uid_counted: false,
++            uid: None,
 +            events: Events::default(),
 +        }
 +    }
++
++    /// Set (or clear) the unique-ID fixture 4Bh returns. Survives power cycles (the ID is factory-set and read-only).
++    pub fn set_uid(&mut self, uid: Option<[u8; 16]>) { self.uid = uid; }
++    pub fn uid(&self) -> Option<[u8; 16]> { self.uid }
 +
 +    pub fn kind(&self) -> ChipKind { self.kind }
 +    pub fn timing(&self) -> Timing { self.timing }
@@ -312,12 +328,13 @@ index 0000000..adcd3e1
 +        self.cmd = Cmd::Ignore;
 +        self.n = 0;
 +        self.id_extra = false;
++        self.uid_counted = false;
 +    }
 +
 +    fn first_byte(&mut self, op: u8) {
 +        self.settle();
 +        self.hdr[0] = op;
-+        const MODELED: [u8; 15] = [0x06, 0x04, 0x05, 0x35, 0x01, 0x02, 0x81, 0x20, 0x52, 0xd8, 0x60, 0xc7, 0x9f, 0x03, 0x0b];
++        const MODELED: [u8; 16] = [0x06, 0x04, 0x05, 0x35, 0x01, 0x02, 0x81, 0x20, 0x52, 0xd8, 0x60, 0xc7, 0x9f, 0x03, 0x0b, 0x4b];
 +        if !MODELED.contains(&op) {
 +            let id = match op {
 +                0x15 | 0x31 if self.kind == ChipKind::Puya => "nm.puya-config-register",
@@ -327,7 +344,7 @@ index 0000000..adcd3e1
 +                0xb9 | 0xab => "nm.deep-power-down",
 +                0x66 | 0x99 => "nm.reset",
 +                0x44 | 0x42 | 0x48 => "nm.security",
-+                0x4b | 0x5a => "nm.unique-sfdp",
++                0x5a => "nm.unique-sfdp",
 +                0x3b | 0xbb | 0x6b | 0xeb | 0xa2 | 0x32 => "nm.multi-io",
 +                0x90 | 0x92 | 0x94 => "nm.electronic-id",
 +                0x77 | 0xff => "nm.burst-wrap",
@@ -350,6 +367,10 @@ index 0000000..adcd3e1
 +                        Cmd::Ignore // not decoded, does not disturb the cycle (answers nothing)
 +                    }
 +                }
++                0x4b => {
++                    self.unspec("ruid.busy"); // not stated for RUID (UC states it for RDSFDP only)
++                    Cmd::Ignore
++                }
 +                0x03 | 0x0b => Cmd::Ignore, // rejected without effect on the cycle
 +                _ => {
 +                    self.unspec("cmd.busy");
@@ -362,6 +383,7 @@ index 0000000..adcd3e1
 +            0x05 => Cmd::Rdsr(0),
 +            0x35 => Cmd::Rdsr(8),
 +            0x9f => Cmd::Rdid,
++            0x4b => Cmd::Ruid,
 +            0x03 => Cmd::Read03,
 +            0x0b => Cmd::Read0b,
 +            _ => {
@@ -387,6 +409,35 @@ index 0000000..adcd3e1
 +            Cmd::Rdsr(shift) => {
 +                let (v, _) = self.status();
 +                (v >> shift) as u8
++            }
++            Cmd::Ruid => {
++                if k < 3 {
++                    self.hdr[k + 1] = out; // dummy bytes 1-3 (the UC25HQ80's Table-7 lists 00H for them)
++                    0xff
++                } else if k == 3 {
++                    if self.kind == ChipKind::Uc25hq80 && (self.hdr[1] | self.hdr[2] | self.hdr[3]) != 0 {
++                        self.unspec("ruid.dummy-values"); // not stated for other values: refused
++                        self.cmd = Cmd::Ignore;
++                    }
++                    0xff // the fourth dummy byte
++                } else if k - 4 < 16 {
++                    match self.uid {
++                        Some(u) => u[k - 4],
++                        None => {
++                            if !self.uid_counted {
++                                self.uid_counted = true;
++                                self.events.uid_unknown_reads += 1; // no value is printed in the datasheets: 0xFF, unknown, counted
++                            }
++                            0xff
++                        }
++                    }
++                } else {
++                    if !self.id_extra {
++                        self.id_extra = true;
++                        self.unspec("ruid.beyond-128-bits");
++                    }
++                    0xff
++                }
 +            }
 +            Cmd::Rdid => {
 +                if k < 3 {
@@ -438,6 +489,12 @@ index 0000000..adcd3e1
 +        self.settle();
 +        match cmd {
 +            Cmd::Ignore | Cmd::Rdsr(_) | Cmd::Rdid => None,
++            Cmd::Ruid => {
++                if n < 5 {
++                    self.unspec("ruid.malformed"); // CS# rose before the four dummy bytes were complete
++                }
++                None
++            }
 +            Cmd::Read03 | Cmd::Read0b => {
 +                let need = if cmd == Cmd::Read03 { 4 } else { 5 };
 +                if n < need {
@@ -792,10 +849,67 @@ index 0000000..adcd3e1
 +    #[test]
 +    fn unmodelled_opcodes_are_recorded() {
 +        let (mut c, mut mem) = (at(ChipKind::Uc25hq80), vec![0xff; FLASH_SIZE]);
-+        assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], 4), [0xff; 4]);
++        assert_eq!(xfer(&mut c, &mut mem, &[0x5a, 0, 0, 0, 0], 4), [0xff; 4]); // SFDP is not modelled
 +        assert_eq!(c.events.not_modeled, 1);
++        assert_eq!(c.events.last_not_modeled, 0x5a);
 +        assert_eq!(c.take_log(), ["nm.unique-sfdp"]);
 +        assert_eq!(c.status(), (0, 0));
++    }
++
++    const UID: [u8; 16] = [0x13, 0x57, 0x9b, 0xdf, 0x02, 0x46, 0x8a, 0xce, 0xf1, 0xe2, 0xd3, 0xc4, 0xb5, 0xa6, 0x97, 0x88]; // a test fixture, not a device ID
++
++    /// 4Bh: four dummy bytes, then the fixture's 16 bytes, first byte first, any length up to 16.
++    #[test]
++    fn ruid_returns_the_fixture_in_transmission_order() {
++        for kind in [ChipKind::Puya, ChipKind::Uc25hq80] {
++            let (mut c, mut mem) = (at(kind), vec![0xff; FLASH_SIZE]);
++            c.set_uid(Some(UID));
++            assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], 16), UID);
++            for n in [0usize, 1, 2, 8, 15] {
++                assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], n), UID[..n]);
++            }
++            assert_eq!(c.events.unspecified + c.events.not_modeled + c.events.uid_unknown_reads, 0);
++            assert_eq!(c.status(), (0, 0), "a read: no WIP, WEL or status change");
++        }
++    }
++
++    /// Without a fixture the bytes are 0xFF and counted as unknown; nothing is invented. Dummy values: Puya don't-care, UC25HQ80 refuses non-zero in bytes 2-4.
++    #[test]
++    fn ruid_without_a_fixture_and_the_dummy_byte_difference() {
++        let (mut c, mut mem) = (at(ChipKind::Puya), vec![0xff; FLASH_SIZE]);
++        assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], 16), [0xff; 16]);
++        assert_eq!(c.events.uid_unknown_reads, 1, "one transaction, counted once");
++        assert_eq!(c.events.unspecified, 0);
++        c.set_uid(Some(UID));
++        assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0xff, 0xaa, 0x55, 0x12], 16), UID, "Puya: dummy bytes carry no meaning");
++        let mut u = at(ChipKind::Uc25hq80);
++        u.set_uid(Some(UID));
++        for tx in [[0x4b, 1, 0, 0, 0], [0x4b, 0, 0x80, 0, 0], [0x4b, 0, 0, 0xff, 0]] {
++            assert_eq!(xfer(&mut u, &mut mem, &tx, 16), [0xff; 16], "refused: no ID bytes");
++            assert_eq!(u.take_log(), ["ruid.dummy-values"]);
++        }
++        assert_eq!(xfer(&mut u, &mut mem, &[0x4b, 0, 0, 0, 0xa5], 16), UID, "the fourth dummy byte is not constrained");
++    }
++
++    /// Refusals are explicit (counted as unspecified), the fixture survives power cycles, and 4Bh during a cycle is refused.
++    #[test]
++    fn ruid_refusals_and_persistence() {
++        for kind in [ChipKind::Puya, ChipKind::Uc25hq80] {
++            let (mut c, mut mem) = (at(kind), vec![0xff; FLASH_SIZE]);
++            c.set_uid(Some(UID));
++            assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0], 0), []);
++            assert_eq!(c.take_log(), ["ruid.malformed"], "CS# before the four dummy bytes");
++            assert_eq!(&xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], 17)[..16], UID);
++            assert_eq!(c.take_log(), ["ruid.beyond-128-bits"], "more than 128 bits");
++            c.power_cycle();
++            assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], 16), UID, "the factory-set ID survives power-off");
++            xfer(&mut c, &mut mem, &[0x06], 0);
++            xfer(&mut c, &mut mem, &[0x20, 0, 0, 0], 0);
++            assert!(c.wip());
++            assert_eq!(xfer(&mut c, &mut mem, &[0x4b, 0, 0, 0, 0], 4), [0xff; 4]);
++            assert_eq!(c.take_log(), ["ruid.busy"], "not stated for RUID: refused, the cycle is undisturbed");
++            assert!(c.wip());
++        }
 +    }
 +}
 diff --git a/crates/fm1-soc/src/spiflash.rs b/crates/fm1-soc/src/spiflash.rs
@@ -885,10 +999,10 @@ index 9c063e6..d0e3aee 100644
          if i == 0 {
 diff --git a/crates/fm1-soc/tests/chip_oracle.rs b/crates/fm1-soc/tests/chip_oracle.rs
 new file mode 100644
-index 0000000..56f7876
+index 0000000..617ca66
 --- /dev/null
 +++ b/crates/fm1-soc/tests/chip_oracle.rs
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,360 @@
 +//! Replays oracle transcripts (generated from the Stage A reference model, ci/machine/chipmodel.mjs) against
 +//! the Rust chip state machine, two ways:
 +//!   * `chip_driver`: `Chip` directly (select / transfer / release), including CS rising mid-byte;
@@ -1026,7 +1140,9 @@ index 0000000..56f7876
 +    mismatches: Vec<String>,
 +}
 +
-+fn replay(make: &dyn Fn(ChipKind, Timing, u64, bool, bool) -> Box<dyn Drv>) -> Report {
++type Maker = dyn Fn(ChipKind, Timing, u64, bool, bool, Option<[u8; 16]>) -> Box<dyn Drv>;
++
++fn replay(make: &Maker) -> Report {
 +    let path = std::env::var("FM1_CHIP_ORACLE").expect("FM1_CHIP_ORACLE must name the oracle transcript file (see gen-transcripts.mjs)");
 +    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
 +    let mut rep = Report::default();
@@ -1050,7 +1166,9 @@ index 0000000..56f7876
 +                let timing = if f[3] == "typical" { Timing::Typical } else { Timing::Maximum };
 +                hz = f[4].parse().unwrap();
 +                let (wp, pat) = (f[5] == "1", f[6] == "pat");
-+                drv = Some(make(kind, timing, hz, wp, pat));
++                // an optional 4Bh unique-ID fixture: uid=<32 hex digits> (a test fixture; no real device ID)
++                let uid: Option<[u8; 16]> = f.get(7).and_then(|s| s.strip_prefix("uid=")).map(|h| unhex(h).try_into().expect("16 bytes"));
++                drv = Some(make(kind, timing, hz, wp, pat, uid));
 +                us_total = 0;
 +                rep.scenarios += 1;
 +            }
@@ -1079,7 +1197,7 @@ index 0000000..56f7876
 +                    if read > 0 && !eout.is_empty() {
 +                        let status = matches!(tx[0], 0x05 | 0x35);
 +                        for k in 0..read {
-+                            let mask = if status { !eunk[k] } else { 0xff };
++                            let mask = !eunk[k]; // bits the oracle marks unknown (status bits the datasheets leave open; the 4Bh ID without a fixture)
 +                            if (out[k] ^ eout[k]) & mask != 0 {
 +                                nbad += 1;
 +                                bad(&mut rep, &name, ln, format!("tx {} read byte {k}: chip {:02x}, oracle {:02x} (unknown mask {:02x})", f[4], out[k], eout[k], if status { eunk[k] } else { 0 }));
@@ -1147,7 +1265,7 @@ index 0000000..56f7876
 +    rep
 +}
 +
-+fn run(make: &dyn Fn(ChipKind, Timing, u64, bool, bool) -> Box<dyn Drv>, label: &str) {
++fn run(make: &Maker, label: &str) {
 +    let r = replay(make);
 +    eprintln!(
 +        "{label}: {} scenarios, {} transactions, {} array checks, {} final hashes, {} WIP checks, {} power cycles; mismatches: {}",
@@ -1161,9 +1279,10 @@ index 0000000..56f7876
 +#[ignore = "needs the oracle transcript: set FM1_CHIP_ORACLE and run with --ignored"]
 +fn chip_driver_matches_the_oracle() {
 +    run(
-+        &|kind, timing, hz, wp, pat| {
++        &|kind, timing, hz, wp, pat, uid| {
 +            let mut chip = Chip::new(kind, timing);
 +            chip.set_wp(wp);
++            chip.set_uid(uid);
 +            Box::new(ChipDrv { chip, mem: if pat { pattern() } else { vec![0xff; FLASH_SIZE] }, hz })
 +        },
 +        "chip driver",
@@ -1174,11 +1293,12 @@ index 0000000..56f7876
 +#[ignore = "needs the oracle transcript: set FM1_CHIP_ORACLE and run with --ignored"]
 +fn soc_registers_match_the_oracle() {
 +    run(
-+        &|kind, timing, hz, wp, pat| {
++        &|kind, timing, hz, wp, pat, uid| {
 +            let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
 +            soc.periph.hz = hz;
 +            soc.flash.set_chip(Some((kind, timing)));
 +            soc.flash.chip.as_mut().unwrap().set_wp(wp);
++            soc.flash.chip.as_mut().unwrap().set_uid(uid);
 +            if pat {
 +                soc.flash.mem.copy_from_slice(&pattern());
 +            }
@@ -1200,6 +1320,18 @@ index 0000000..56f7876
 +        }
 +        soc.write32(CS, 1);
 +    };
++    // 4Bh in the original model: FF in the four dummy slots, then the FM1- pattern repeating (it is not a device ID)
++    soc.write32(CS, 0);
++    soc.write32(SPI0, 0);
++    soc.write32(SPI0 + 8, 0x4b);
++    let mut pattern = Vec::new();
++    for _ in 0..12 {
++        soc.write32(SPI0, 0x1000);
++        soc.write32(SPI0 + 8, 0);
++        pattern.push((soc.read32(SPI0 + 8) & 0xff) as u8);
++    }
++    soc.write32(CS, 1);
++    assert_eq!(pattern, [0xff, 0xff, 0xff, 0xff, 0x46, 0x4d, 0x31, 0x2d, 0x46, 0x4d, 0x31, 0x2d], "the legacy 4Bh answer is unchanged: FF in the four dummy slots, then the FM1- pattern");
 +    cmd(&mut soc, &[0x02, 0x00, 0x10, 0x00, 0xa5]); // program with no WREN: the original model programs it anyway
 +    assert_eq!(soc.flash.mem[0x1000], 0xa5);
 +    cmd(&mut soc, &[0x06]);
@@ -1232,10 +1364,10 @@ index 0000000..56f7876
 +    }
 +}
 diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
-index fa2ab51..e97f62b 100644
+index fa2ab51..007fb8a 100644
 --- a/crates/fm1-web/src/lib.rs
 +++ b/crates/fm1-web/src/lib.rs
-@@ -263,6 +263,98 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
+@@ -263,6 +263,120 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
  pub extern "C" fn fm1_flash_revision() -> u32 { machine().map_or(0, |m| m.soc.flash.revision) }
  #[no_mangle]
  pub extern "C" fn fm1_flash_busy() -> u32 { machine().is_some_and(|m| m.soc.flash.busy()) as u32 }
@@ -1280,7 +1412,29 @@ index fa2ab51..e97f62b 100644
 +        0 => c.events.unspecified,
 +        1 => c.events.not_modeled,
 +        2 => c.events.last_not_modeled as u32, // the most recent opcode counted in 1
++        3 => c.events.uid_unknown_reads,       // 4Bh reads answered without a unique-ID fixture
 +        _ => 0,
++    })
++}
++/// Configure the chip's 128-bit unique ID, the 16 bytes 4Bh transmits (w0 = bytes 0-3 with byte 0 in the top byte, ..., w3 = bytes 12-15). A caller-supplied
++/// fixture: the value is per device and in neither datasheet. Needs a chip profile; survives power cycles. Returns 0, or 1 without a profile.
++#[no_mangle]
++pub extern "C" fn fm1_flash_uid_set(w0: u32, w1: u32, w2: u32, w3: u32) -> u32 {
++    machine().and_then(|m| m.soc.flash.chip.as_mut()).map_or(1, |c| {
++        let mut u = [0u8; 16];
++        for (i, w) in [w0, w1, w2, w3].iter().enumerate() {
++            u[4 * i..4 * i + 4].copy_from_slice(&w.to_be_bytes());
++        }
++        c.set_uid(Some(u));
++        0
++    })
++}
++/// Remove the unique-ID fixture (4Bh then answers 0xFF and counts the read as unknown). Returns 0, or 1 without a profile.
++#[no_mangle]
++pub extern "C" fn fm1_flash_uid_clear() -> u32 {
++    machine().and_then(|m| m.soc.flash.chip.as_mut()).map_or(1, |c| {
++        c.set_uid(None);
++        0
 +    })
 +}
 +/// The chip's non-volatile status bits (value | unknown mask << 16): what it keeps while the unit is off. 0 without a chip profile.

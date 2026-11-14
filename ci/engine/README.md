@@ -28,7 +28,7 @@ The script installs nothing.
 node ci/engine/build.mjs --upstream /path/to/fm1-emu
 # or let it clone the pinned tag into ci/engine/out/upstream (needs network)
 node ci/engine/build.mjs
-# also run the Rust host tests and the oracle replay (about a minute more)
+# also run the Rust host tests and the oracle replay, including the 4Bh scenarios (about a minute more)
 node ci/engine/build.mjs --upstream /path/to/fm1-emu --test
 ```
 Output in `ci/engine/out/`: `fm1_web_chips.wasm` (the engine), `BUILD-RECORD.json` (toolchain, hashes), `src/` (the patched tree),
@@ -40,12 +40,12 @@ from `pin.json`.
 2. the pinned upstream commit exists in the clone;
 3. `git apply --check` then apply (with `core.autocrlf=false`: the upstream blobs are LF) succeeds;
 4. the generated tables' sha256 equals `pin.json` (if `chipspec.mjs` changes, rebuild and update `pin.json` deliberately);
-5. the artifact's exports are **exactly** the 58 in `pin.json` (the 48 of an unpatched v0.3.0 build plus ten: `fm1_flash_chip`,
-   `fm1_flash_timing`, `fm1_flash_wip`, `fm1_flash_events`, `fm1_flash_nv_status`, `fm1_flash_nv_restore`, and four test-only bus hooks
+5. the artifact's exports are **exactly** the 60 in `pin.json` (the 48 of an unpatched v0.3.0 build plus twelve: `fm1_flash_chip`,
+   `fm1_flash_timing`, `fm1_flash_wip`, `fm1_flash_events`, `fm1_flash_nv_status`, `fm1_flash_nv_restore`, `fm1_flash_uid_set`, `fm1_flash_uid_clear`, and four test-only bus hooks
    `fm1_test_bus_write32`, `fm1_test_bus_read32`, `fm1_test_advance_us`, `fm1_test_set_wp`; none removed) and its only import is `env.fm1_jit_compile`;
 6. the artifact's sha256 equals the verified hash **for the same toolchain**. `pin.json` records one:
    `rustc 1.97.1 (8bab26f4f 2026-07-14)` on Windows x64 gives
-   `159acffe97a0942b16d4c1da12c3d1d9f92c5de1abb678287af48513bd21a926` (2,721,296 bytes); an unpatched build of the same source with
+   `2d4d30372f8747266999d713162842a66da1640e8d3937c8005d81084d385c5c` (2,722,805 bytes); an unpatched build of the same source with
    the same recipe gives `943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe`. A different toolchain may produce a
    different hash legitimately: the build then says "no verified hash" and still checks everything else.
 
@@ -64,8 +64,13 @@ Without a built engine the live chip tests in `npm run test:machine` are reporte
 - program and erase need WEL; WIP is real and lasts the datasheet time (typical by default, maximum on request); WEL stays set until the cycle ends;
 - `05h` returns the full status register, `35h` the high byte; WRSR works (BP/CMP/SRP/QE/LB), with `WP#` held high;
 - page program wraps inside its 256-byte page and keeps only the last 256 bytes; erases `20h 52h D8h 81h 60h C7h`; BP/CMP protection;
-- opcodes outside the model (for example `4Bh` unique ID, which the original model answered) return `FF` and are counted
-  (`fm1_flash_events(1)`; `fm1_flash_events(2)` is the most recent such opcode); behaviour the datasheets leave open is ignored and counted, never guessed;
+- opcodes outside the model (for example `5Ah` SFDP) return `FF` and are counted (`fm1_flash_events(1)`; `fm1_flash_events(2)` is the most recent such opcode);
+- **`4Bh` Read Unique ID is modelled** (from Puya p.54 / UC25HQ80 p.43-44; levels in `docs/dev/FLASH-CHIPS.md`): command, four dummy bytes, then 16 ID bytes, byte 0 (bits 127-120)
+  first. **The ID's value is a caller-supplied fixture** (`fm1_flash_uid_set(w0..w3)`, `fm1_flash_uid_clear()`; harness option `flashUid`, CLI `--flash-uid`): it is per device
+  and in neither datasheet, so the engine has none unless one is given and never invents one. **Without a fixture the bytes are `FF` and the read is counted as unknown**
+  (`fm1_flash_events(3)`), which is what firmware saw before the port; FF is not equivalent to the legacy model's `FM1-` pattern. The fixture survives power cycles (it stays with
+  the same chip; a different chip swapped in has none). UC25HQ80: non-zero values in dummy bytes 2-4 are refused (Table-7 lists 00H); Puya's dummy bytes are don't-care. Refused and
+  counted as unspecified: CS# before the four dummy bytes, more than 16 bytes, 4Bh during a cycle. The legacy profile keeps its original `FM1-` answer exactly; behaviour the datasheets leave open is ignored and counted, never guessed;
 - the JEDEC ID comes from the profile (`85 60 14` / `B3 60 14`), even on the SMK-37 board (harness refuses profiles there);
 - **array-at-accept simplification:** the array changes when the program/erase command is accepted (chip select rises), while WIP and WEL follow the
   cycle time. The datasheets leave array contents during a cycle unspecified and reads during a cycle are not answered. Power loss *during* a

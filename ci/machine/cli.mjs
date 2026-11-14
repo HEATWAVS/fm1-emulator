@@ -16,6 +16,8 @@
 //                       WIP, protection, page wrap, cycle timing. Needs a chip-profile engine (node ci/engine/build.mjs); used
 //                       automatically from ci/engine/out/ unless --engine is given. legacy = the original model (same as omitting it).
 //                       Cannot be combined with --flash-id. Default: not set, the shipped engine's original flash model, unchanged.
+//   --flash-uid HEX     the chip's 128-bit unique ID that 4Bh returns: 32 hex digits, byte 0 first. A TEST FIXTURE (the real value is per device and in
+//                       neither datasheet; none is supplied). Needs --flash-chip. Without it 4Bh answers FF and counts the read as unknown.
 //   --flash-timing T    typical (default with --flash-chip) | maximum: the datasheet cycle times. Needs --flash-chip.
 //   --engine FILE       use this engine .wasm instead of site/emulator/fm1_web.wasm (read only; e.g. a chip-profile engine)
 //   --seconds N         emulated seconds to watch (default 3)
@@ -43,7 +45,7 @@ function usage(message) {
 
 const argv = process.argv.slice(2);
 const opts = { corrupt: [] };
-const valued = { "--package": "package", "--fw": "fw", "--flash": "flash", "--seconds": "seconds", "--clock": "clock", "--expect": "expect", "--save-flash": "saveFlash", "--flash-id": "flashId", "--flash-chip": "flashChip", "--flash-timing": "flashTiming", "--engine": "engine" };
+const valued = { "--package": "package", "--fw": "fw", "--flash": "flash", "--seconds": "seconds", "--clock": "clock", "--expect": "expect", "--save-flash": "saveFlash", "--flash-id": "flashId", "--flash-chip": "flashChip", "--flash-timing": "flashTiming", "--flash-uid": "flashUid", "--engine": "engine" };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--json") opts.json = true;
@@ -72,7 +74,7 @@ try {
   const pkg = new Uint8Array(readFileSync(packagePath));
   let sectors = opts.flash ? unpackRecords(new Uint8Array(readFileSync(resolve(opts.flash)))) : [];
   if (opts.corrupt.length) sectors = mergeSectors(sectors, corruptedSectors(engine, pkg, opts.corrupt, { mhz }));
-  const machine = Fm1Machine.boot(engine, pkg, { mhz, sectors, flashId: opts.flashId ?? null, flashChip: opts.flashChip ?? null, flashTiming: opts.flashTiming ?? null });
+  const machine = Fm1Machine.boot(engine, pkg, { mhz, sectors, flashId: opts.flashId ?? null, flashChip: opts.flashChip ?? null, flashTiming: opts.flashTiming ?? null, flashUid: opts.flashUid ?? null });
   const report = watch(machine, { seconds });
   const changed = machine.changedSectors();
   if (opts.saveFlash) writeFileSync(resolve(opts.saveFlash), packRecords(changed));
@@ -80,7 +82,7 @@ try {
   result = {
     engine: { name: engine.name, wasmSha256: engine.wasmSha256, capabilities: engine.capabilities },
     package: { path: packagePath, sha256: createHash("sha256").update(pkg).digest("hex") },
-    options: { seconds, mhz, corrupt: opts.corrupt, flashFile: opts.flash ?? null, ...(opts.flashId ? { flashId: opts.flashId } : {}), ...(opts.flashChip ? { flashChip: opts.flashChip } : {}), ...(opts.flashTiming ? { flashTiming: opts.flashTiming } : {}) },
+    options: { seconds, mhz, corrupt: opts.corrupt, flashFile: opts.flash ?? null, ...(opts.flashId ? { flashId: opts.flashId } : {}), ...(opts.flashChip ? { flashChip: opts.flashChip } : {}), ...(opts.flashTiming ? { flashTiming: opts.flashTiming } : {}), ...(opts.flashUid ? { flashUid: opts.flashUid } : {}) },
     // only present when --flash-id was given (so default output is unchanged): { method, address, previous, current, name }
     ...(opts.flashId ? { flashId: machine.flashIdInfo } : {}),
     // only present when --flash-chip was given: { chip, timing, jedec }, plus the chip's own counters

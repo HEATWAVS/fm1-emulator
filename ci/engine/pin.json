@@ -8,7 +8,7 @@
   },
   "patch": {
     "file": "chip-profiles.patch",
-    "sha256": "3ea9594a53a59729959d77d19144a077ba9d03a5dba78ac195d4c1f6b0ffd345",
+    "sha256": "aede12f91442d883dc4f648eefafb0ab9ae7141d4140d0c6e55a9ca68bd09035",
     "note": "applies to the LF blobs of the pinned commit with core.autocrlf=false"
   },
   "generatedTablesSha256": "5d24d3674947d8ef5687f365bf79e89daa5fa8f8a50fdc5ccf4c0c6618142176",
@@ -61,8 +61,8 @@
     "rustc 1.97.1 (8bab26f4f 2026-07-14)": {
       "host": "x86_64-pc-windows-msvc",
       "unpatchedWasmSha256": "943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe",
-      "patchedWasmSha256": "159acffe97a0942b16d4c1da12c3d1d9f92c5de1abb678287af48513bd21a926",
-      "patchedWasmBytes": 2721296
+      "patchedWasmSha256": "2d4d30372f8747266999d713162842a66da1640e8d3937c8005d81084d385c5c",
+      "patchedWasmBytes": 2722805
     }
   },
   "expectedExports": [
@@ -86,6 +86,8 @@
     "fm1_flash_restore",
     "fm1_flash_revision",
     "fm1_flash_timing",
+    "fm1_flash_uid_clear",
+    "fm1_flash_uid_set",
     "fm1_flash_wip",
     "fm1_halted",
     "fm1_idle_ms",
@@ -131,6 +133,8 @@
     "fm1_flash_nv_restore",
     "fm1_flash_nv_status",
     "fm1_flash_timing",
+    "fm1_flash_uid_clear",
+    "fm1_flash_uid_set",
     "fm1_flash_wip",
     "fm1_test_advance_us",
     "fm1_test_bus_read32",

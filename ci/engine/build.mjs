@@ -119,7 +119,7 @@ if (!v.ok) fail("verification failed (see above)");
 step(9, opt.test ? "Rust host tests + oracle replay (--test)" : "Rust host tests skipped (add --test to run them)");
 if (opt.test) {
   const oracle = resolve(opt.out, "oracle.txt");
-  execFileSync(process.execPath, [resolve(here, "gen-transcripts.mjs"), oracle], { stdio: "inherit" });
+  execFileSync(process.execPath, [resolve(here, "gen-transcripts.mjs"), oracle, "--with-ruid"], { stdio: "inherit" });
   run(["test", "--workspace", "--offline", "--target-dir", resolve(opt.out, "target-host"), "--", "--include-ignored"], { FM1_CHIP_ORACLE: oracle, RUSTFLAGS: "" });
 }
 console.log(`\nbuilt ${engine}\nsha256 ${v.sha256}`);

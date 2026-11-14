@@ -30,7 +30,7 @@ import { FLASH_SIZE, SECTOR, packRecords, unpackRecords, parseCorruption, corrup
 import { registerChipTests } from "./chiptests.mjs";
 import { registerLiveChipTests } from "./chiplivetests.mjs";
 import { registerFirmwareTests } from "./firmwaretests.mjs";
-import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions } from "./flashchip.mjs";
+import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions, parseFlashUid, uidWords } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
 
@@ -62,7 +62,7 @@ test.quick("engine capabilities are detected from its exports", () => {
   assert.equal(c.selectFlashId, false);
   assert.equal(c.flashFaultInjection, false);
   assert.equal(c.resetCounter, false);
-  for (const k of ["selectFlashChip", "flashWip", "flashEvents"]) assert.equal(c[k], false, `${k}: the shipped engine has no chip profiles`);
+  for (const k of ["selectFlashChip", "flashWip", "flashEvents", "flashUid"]) assert.equal(c[k], false, `${k}: the shipped engine has no chip profiles`);
   assert.throws(() => requires(engine, "selectFlashId"), /lacks: selectFlashId/);
 });
 
@@ -359,16 +359,17 @@ test("flash ID: CLI default output is unchanged; the option and invalid IDs beha
 // record the calls the harness makes); the live tests at the end need the engine built by ci/engine/build.mjs.
 const chipCode = (c) => (e) => e instanceof FlashChipError && e.code === c;
 /** The shipped engine with the chip exports stubbed: records every call, so order and arguments can be checked. */
-function stubChipEngine(calls, { board = 0, chipRc = 0, timingRc = 0, nv = null } = {}) {
+function stubChipEngine(calls, { board = 0, chipRc = 0, timingRc = 0, nv = null, uid = false } = {}) {
   return {
     ...engine, name: "stub-chip-engine",
-    capabilities: { ...engine.capabilities, selectFlashChip: true, flashNv: nv !== null },
+    capabilities: { ...engine.capabilities, selectFlashChip: true, flashNv: nv !== null, flashUid: uid },
     instantiate: () => {
       const real = engine.instantiate();
       return { ...real, fm1_board: () => board,
         fm1_flash_chip: (id) => { calls.push(["chip", id]); return chipRc; },
         fm1_flash_timing: (mode) => { calls.push(["timing", mode]); return timingRc; },
         fm1_flash_nv_status: () => nv,
+        fm1_flash_uid_set: (...w) => { calls.push(["uid", ...w]); return 0; },
         fm1_flash_nv_restore: (v) => { calls.push(["nv", v]); return 0; },
         fm1_render: (...a) => { calls.push(["render"]); return real.fm1_render(...a); } };
     },
@@ -497,12 +498,35 @@ test.quick("flash chip: a power cycle carries the chip's non-volatile status for
   assert.doesNotThrow(() => plain.powerCycle(), "an engine without the flashNv capability just boots the chip fresh (as before)");
 });
 
+test.quick("flash chip: flashUid is parsed strictly, validated before boot, applied right after the profile, and a power cycle keeps it for the same chip only", () => {
+  const HEX = "13579bdf02468acef1e2d3c4b5a69788";
+  for (const ok of [HEX, HEX.toUpperCase(), "0x" + HEX, ` ${HEX} `, [...Buffer.from(HEX, "hex")], Uint8Array.from(Buffer.from(HEX, "hex"))]) assert.equal(parseFlashUid(ok), HEX);
+  for (const bad of ["", HEX.slice(1), HEX + "0", "zz" + HEX.slice(2), [1, 2, 3], new Array(16).fill(256), new Array(16).fill(-1), new Array(16).fill(1.5), 5, null, {}, true]) assert.throws(() => parseFlashUid(bad), chipCode("invalid-uid"), JSON.stringify(bad));
+  assert.deepEqual(uidWords(HEX), [0x13579bdf, 0x02468ace, 0xf1e2d3c4, 0xb5a69788], "word 0 holds bytes 0-3, byte 0 in the top byte");
+  const calls = [], eng = stubChipEngine(calls, { uid: true });
+  assert.throws(() => Fm1Machine.boot(eng, FELUCCA, { flashUid: HEX }), chipCode("uid-needs-chip"));
+  assert.throws(() => Fm1Machine.boot(eng, FELUCCA, { flashChip: "legacy", flashUid: HEX }), chipCode("uid-needs-chip"));
+  assert.throws(() => Fm1Machine.boot(eng, FELUCCA, { flashChip: "puya", flashUid: "nope" }), chipCode("invalid-uid"));
+  assert.throws(() => Fm1Machine.boot(stubChipEngine([], { uid: false }), FELUCCA, { flashChip: "puya", flashUid: HEX }), chipCode("unsupported-engine"), "an engine without the flashUid capability");
+  assert.deepEqual(calls, [], "nothing was selected for any refused request");
+  const m = Fm1Machine.boot(eng, FELUCCA, { flashChip: "puya", flashUid: HEX.toUpperCase() });
+  assert.deepEqual(calls, [["chip", 1], ["timing", 0], ["uid", 0x13579bdf, 0x02468ace, 0xf1e2d3c4, 0xb5a69788]]);
+  assert.equal(m.options.flashUid, HEX, "stored normalised, so a power cycle keeps it");
+  const uidCalls = () => calls.filter((c) => c[0] === "uid").length;
+  m.powerCycle(); assert.equal(uidCalls(), 2, "same chip: kept");
+  m.powerCycle({ flashChip: "uc25hq80" }); assert.equal(uidCalls(), 2, "a different chip swapped in while off has no fixture");
+  m.powerCycle({ flashChip: "old", flashTiming: "maximum" }); assert.equal(uidCalls(), 3, "same chip (alias): kept");
+  m.powerCycle({ flashUid: "00".repeat(16) }); assert.deepEqual(calls.filter((c) => c[0] === "uid").at(-1), ["uid", 0, 0, 0, 0], "an explicit value wins");
+  m.powerCycle({ flashChip: null, flashTiming: null }); assert.equal(uidCalls(), 4, "back to the original model: no fixture, no error");
+  assert.equal(m.powerCycle({ flashChip: null, flashTiming: null }).options.flashUid, null);
+});
+
 test.quick("chip engine pin: the patch and the tables generated from chipspec.mjs are the ones the pin records (one source of truth)", () => {
   const sha = (b) => createHash("sha256").update(b).digest("hex");
   assert.equal(sha(readFileSync(resolve(import.meta.dirname, "../engine", PIN.patch.file))), PIN.patch.sha256, "ci/engine/chip-profiles.patch changed: update pin.json deliberately");
   assert.equal(sha(renderTables()), PIN.generatedTablesSha256, "chipspec.mjs changed: rebuild the engine (node ci/engine/build.mjs --test) and update pin.json");
   assert.equal(PIN.upstream.commit, "631b790b191e87ea8b796d351cfe7e61ab366794");
-  assert.equal(PIN.expectedExports.length, 58);
+  assert.equal(PIN.expectedExports.length, 60);
   for (const n of PIN.addedExports) assert.ok(PIN.expectedExports.includes(n), n);
   assert.ok(!engine.exportNames.has("fm1_flash_chip"), "the shipped engine was not replaced");
 });
@@ -571,7 +595,8 @@ test.chip("flash chip (live): WIP is its own export (never set by the legacy mod
   assert.ok(typ.wip > 0, "a flash cycle was seen in progress under the Puya profile");
   assert.ok(max.wip > typ.wip, `maximum timing holds WIP longer: ${typ.wip} -> ${max.wip} samples`);
   assert.equal(again.wip, max.wip, "deterministic");
-  assert.deepEqual(typ.m.flashEvents(), { unspecified: 0, notModeled: 1, lastNotModeled: 0x4b }, "quadro-fm1 reads the unique ID (4Bh) once, which the model does not cover; it is counted, not guessed");
+  assert.deepEqual(typ.m.flashEvents(), { unspecified: 0, notModeled: 0, lastNotModeled: 0 }, "4Bh is modelled: no unmodelled or unspecified command");
+  assert.equal(typ.m.flashUidUnknownReads(), 1, "quadro-fm1 reads the unique ID (4Bh) once; with no fixture configured the read is answered FF and counted as unknown, not guessed");
 });
 
 test.chip("flash chip (live): a power cycle keeps the profile; options are still validated on the chip engine", () => {

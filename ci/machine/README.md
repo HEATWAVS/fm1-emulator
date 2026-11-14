@@ -61,7 +61,7 @@ node ci/machine/cli.mjs --fw felucca --engine some/other_engine.wasm --flash-chi
 In code: `Fm1Machine.boot(engine, pkg, { flashChip: "puya" | "uc25hq80" | "legacy", flashTiming: "typical" | "maximum" })`;
 `machine.flashChipInfo` says what was selected, `machine.flashWip()` reads the chip's WIP bit (distinct from `observe().flashBusy`,
 which is chip-select), `machine.flashEvents()` counts commands the model ignored as unspecified and opcodes outside it
-(`{ unspecified, notModeled, lastNotModeled }`: the last such opcode, 0 = none).
+(`{ unspecified, notModeled, lastNotModeled }`: the last such opcode, 0 = none); `machine.flashUidUnknownReads()` counts 4Bh reads answered without a unique-ID fixture.
 
 - **This is not `flashId`.** `flashId` changes the three ID bytes of the *shipped* engine by a runtime patch and nothing else.
   `flashChip` selects a datasheet-based chip model (status register, WEL, WIP, protection, page wrap, cycle timing) inside the
@@ -75,6 +75,9 @@ which is chip-select), `machine.flashEvents()` counts commands the model ignored
 - **Refusals** (`FlashChipError`, before anything boots): `invalid-chip`, `invalid-timing`, `timing-needs-chip`, `id-conflict`,
   `unsupported-engine` (the engine lacks `fm1_flash_chip`/`fm1_flash_timing`: the shipped engine does), `unsupported-board` (not the FM-1),
   `engine-refused`, `invalid-nv-status`, `nv-needs-chip`. The CLI exits 2 with the reason.
+- **Unique ID for 4Bh:** `flashUid` (32 hex digits or 16 bytes, byte 0 first) / `--flash-uid`. It is a **test fixture**: the real ID is per device and in neither datasheet, so there is
+  none unless you give one (without it 4Bh answers `FF` and counts the read as unknown). Needs a chip profile (`uid-needs-chip`) and an engine with the `flashUid` capability; invalid
+  values are `invalid-uid`. `powerCycle()` keeps it for the same chip; a different chip swapped in while off has none. The legacy profile's 4Bh answer (the `FM1-` pattern) is unchanged.
 - Behaviour differences from the original model, the array-at-accept simplification and the known limitations: `ci/engine/README.md`.
 
 ## Flash-chip reference model (datasheet oracle)
@@ -134,8 +137,8 @@ code sector halts the CPU (see `selftest.mjs`).
 | Command | What runs | Time |
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
-| `npm run test:machine:quick` | quick tier alone (116 tests: 29 harness incl. one real Felucca boot + 87 chip-model) | ~6 s |
-| `npm run test:machine` | full tier: every test (179 = 92 harness + 87 chip-model), including the slower firmware-behaviour checks. 51 of them need the chip-profile engine (5 chip-engine checks + 42 live chip conformance tests + 4 firmware tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 128 run | ~90 s (~210 s with the chip engine) |
+| `npm run test:machine:quick` | quick tier alone (117 tests: 30 harness incl. one real Felucca boot + 87 chip-model) | ~6 s |
+| `npm run test:machine` | full tier: every test (189 = 102 harness + 87 chip-model), including the slower firmware-behaviour checks. 60 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 129 run | ~90 s (~240 s with the chip engine) |
 | `node ci/machine/selftest.mjs --filter "chip live"` | only the live chip conformance tests (needs the chip engine) | ~9 s |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the

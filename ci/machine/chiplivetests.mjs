@@ -283,11 +283,11 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
     assert.equal(state(c, 0x1000, 0x1fff), "erased", "the first erase completed");
   });
 
-  both("opcodes outside the model (4Bh unique ID, SFDP, REMS, quad...) answer FF, change nothing, and are counted with the opcode", (p) => {
+  both("opcodes outside the model (SFDP, REMS, power-down, quad...) answer FF, change nothing, and are counted with the opcode; 4Bh is no longer among them", (p) => {
     const c = open(p, { fill: "pat" }), h = fnv(c.mem());
     c.wren();
     let n = 0;
-    for (const op of [0x4b, 0x5a, 0x90, 0xab, 0xb9, 0x66, 0x99, 0xeb, 0x3b, 0x75, 0x7a, 0x44, 0x25, 0x50, 0x77]) {
+    for (const op of [0x5a, 0x90, 0xab, 0xb9, 0x66, 0x99, 0xeb, 0x3b, 0x75, 0x7a, 0x44, 0x25, 0x50, 0x77]) {
       assert.deepEqual(c.tx([op, 0, 0, 0, 0], 4), [0xff, 0xff, 0xff, 0xff], `${op.toString(16)} answers FF`);
       const e = c.events();
       assert.equal(e.notModeled, ++n); assert.equal(e.lastNotModeled, op); assert.equal(e.unspecified, 0);
@@ -350,6 +350,82 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
     assert.equal(d.wip(), false);
   });
 
+  // ------------------------------------------------------------------------------------------------ 4Bh Read Unique ID (4Bh engine port)
+  // The ID bytes are a TEST FIXTURE (the real value is per device and in neither datasheet; the engine never supplies one). Sequence: P p54 / U p43-44.
+  const UIDHEX = "13579bdf02468acef1e2d3c4b5a69788", UID = [...Buffer.from(UIDHEX, "hex")], RUID = [0x4b, 0, 0, 0, 0];
+  both("4Bh: four dummy bytes then the configured 16-byte ID, byte 0 first, any length up to 16; repeatable; a read changes nothing; it survives a power cycle", (p) => {
+    const c = open(p, { fill: "pat", options: { flashUid: UIDHEX } }), h = fnv(c.mem());
+    assert.deepEqual(c.tx(RUID, 16), UID);
+    for (const n of [0, 1, 2, 8, 15]) assert.deepEqual(c.tx(RUID, n), UID.slice(0, n), `${n} bytes`);
+    assert.deepEqual(c.tx(RUID, 16), UID, "repeated");
+    c.wren();
+    assert.deepEqual(c.tx(RUID, 16), UID);
+    assert.equal(c.status(), SR.WEL, "a read leaves WEL as it was");
+    assert.equal(c.wip(), false, "no cycle");
+    assert.equal(fnv(c.mem()), h, "the array is untouched");
+    assert.deepEqual(c.events(), NO_EVENTS);
+    assert.equal(c.m.flashUidUnknownReads(), 0);
+    c.tx([0x04]); c.run([0x02, ...a3(0x1000), 0x00]); c.run([0x20, ...a3(0x2000)]); c.run([0x60]);
+    assert.deepEqual(c.tx(RUID, 16), UID, "after program, erase and chip erase");
+    c.x.fm1_flash_nv_restore(c.x.fm1_flash_nv_status() >>> 0);                           // the chip's own power-up (the engine keeps the fixture, not just the harness)
+    assert.deepEqual(c.tx(RUID, 16), UID, "after the chip's power-up");
+    const d = c.powerCycle();
+    assert.deepEqual(d.tx(RUID, 16), UID, "after a power cycle (the ID is factory-set and read-only)");
+    assert.deepEqual(d.powerCycle().tx(RUID, 16), UID);
+  });
+  both("4Bh without a fixture answers FF and counts the read as unknown (not unspecified, not unmodelled); clearing the fixture goes back to that", (p) => {
+    const c = open(p, { fill: "pat" });
+    assert.deepEqual(c.tx(RUID, 16), new Array(16).fill(0xff));
+    assert.equal(c.m.flashUidUnknownReads(), 1, "one transaction, counted once");
+    assert.deepEqual(c.tx(RUID, 3), [0xff, 0xff, 0xff]);
+    assert.equal(c.m.flashUidUnknownReads(), 2);
+    assert.deepEqual(c.events(), NO_EVENTS);
+    c.uid(UIDHEX); assert.deepEqual(c.tx(RUID, 16), UID);
+    c.uid(null); assert.deepEqual(c.tx(RUID, 16), new Array(16).fill(0xff), "cleared");
+    assert.equal(c.m.flashUidUnknownReads(), 3);
+    const swapped = open(p, { fill: "pat", options: { flashUid: UIDHEX } }).powerCycle({ flashChip: p === "puya" ? "uc25hq80" : "puya" });
+    assert.deepEqual(swapped.tx(RUID, 4), [0xff, 0xff, 0xff, 0xff], "a different chip swapped in while off has no fixture");
+  });
+  T("puya", "4Bh dummy bytes: Puya's carry no meaning", () => {
+    const c = open("puya", { options: { flashUid: UIDHEX } });
+    assert.deepEqual(c.tx([0x4b, 0xff, 0xaa, 0x55, 0x12], 16), UID);
+    assert.deepEqual(c.events(), NO_EVENTS);
+  });
+  T("uc25hq80", "4Bh dummy bytes: the UC25HQ80's Table-7 lists 00H for bytes 2-4: another value there is refused (counted), the fourth is free", () => {
+    const c = open("uc25hq80", { options: { flashUid: UIDHEX } });
+    let n = 0;
+    for (const tx of [[0x4b, 1, 0, 0, 0], [0x4b, 0, 0x80, 0, 0], [0x4b, 0, 0, 0xff, 0]]) {
+      assert.deepEqual(c.tx(tx, 16), new Array(16).fill(0xff), "no ID bytes");
+      assert.equal(c.events().unspecified, ++n, `refused and counted: ${tx}`);
+    }
+    assert.deepEqual(c.tx([0x4b, 0, 0, 0, 0xa5], 16), UID);
+    assert.equal(c.events().unspecified, n);
+  });
+  both("4Bh refusals are explicit and counted: CS# before the four dummy bytes, more than 16 bytes, during a cycle (the cycle is undisturbed)", (p) => {
+    const c = open(p, { fill: "pat", options: { flashUid: UIDHEX } });
+    let u = 0;
+    c.tx([0x4b, 0, 0], 0); assert.equal(c.events().unspecified, ++u, "malformed");
+    c.tx([0x4b], 1); assert.equal(c.events().unspecified, ++u, "malformed");
+    assert.deepEqual(c.tx(RUID, 17), [...UID, 0xff]);
+    assert.equal(c.events().unspecified, ++u, "beyond 128 bits: the 17th byte is not defined");
+    c.wren(); c.tx([0x20, ...a3(0x1000)]);
+    assert.deepEqual(c.tx(RUID, 4), [0xff, 0xff, 0xff, 0xff]);
+    assert.equal(c.events().unspecified, ++u, "during a cycle");
+    assert.equal(c.wip(), true, "the cycle is undisturbed");
+    c.settle();
+    assert.equal(state(c, 0x1000, 0x1fff), "erased");
+    assert.deepEqual(c.tx(RUID, 16), UID, "readable again afterwards");
+    assert.equal(c.events().notModeled, 0);
+  });
+  testChip("chip live: the 4Bh fixture exports need a chip profile; the legacy answer is unchanged and untouched by them", () => {
+    const m = Fm1Machine.boot(chipEngine, pkg, { usb: false });
+    assert.equal(m.x.fm1_flash_uid_set(1, 2, 3, 4), 1, "no chip profile: refused");
+    assert.equal(m.x.fm1_flash_uid_clear(), 1);
+    const c = new LiveChip(m);
+    assert.deepEqual(c.tx([0x4b], 12), [0xff, 0xff, 0xff, 0xff, 0x46, 0x4d, 0x31, 0x2d, 0x46, 0x4d, 0x31, 0x2d], "legacy: FF in the four dummy slots, then the FM1- pattern, exactly as before");
+    assert.throws(() => Fm1Machine.boot(chipEngine, pkg, { usb: false, flashUid: UIDHEX }), (e) => e.code === "uid-needs-chip");
+  });
+
   // ------------------------------------------------------------------------------------------------ 8. legacy regression (the original instantaneous model)
   testChip("chip live [legacy]: the default is the original model: instant, never busy, program ignores WEL, no wrap, fake 4Bh, no protection", () => {
     // Expectations are read from the original crates/fm1-soc/src/spiflash.rs (upstream v0.3.0), which the default path still runs.
@@ -370,7 +446,7 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
     assert.equal(c.wip(), false); assert.equal(c.tx([0x05], 1)[0] & 1, 0, "never busy");
     for (const tx of [[0x52, ...a3(0x40000)], [0x81, ...a3(0x40000)], [0x60], [0xc7], [0x01, 0xff, 0xff]]) { c.wren(); c.tx(tx); }
     assert.equal(state(c, 0x40000, 0x4ffff), "same", "52h, 81h, 60h, C7h and 01h do nothing in the original model");
-    assert.deepEqual(c.tx([0x4b, 0, 0, 0, 0], 8), [0x46, 0x4d, 0x31, 0x2d, 0x46, 0x4d, 0x31, 0x2d], "4Bh returns the original model's FM1- pattern");
+    assert.deepEqual(c.tx([0x4b], 12), [0xff, 0xff, 0xff, 0xff, 0x46, 0x4d, 0x31, 0x2d, 0x46, 0x4d, 0x31, 0x2d], "4Bh: FF in the four dummy slots, then the original model's FM1- pattern");
     assert.deepEqual(c.tx([0x0b, ...a3(0x50000), 0x00], 4), [0, 1, 2, 3].map((i) => pat(0x50000 + i)), "reads work");
     assert.deepEqual(c.events(), NO_EVENTS, "no chip profile: no events");
     assert.equal(c.x.fm1_flash_nv_status(), 0);
@@ -383,19 +459,22 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
   });
 
   // ------------------------------------------------------------------------------------------------ quadro-fm1's 4Bh
-  testChip("chip live [puya]: the unsupported opcode quadro-fm1 issues under the Puya profile is 4Bh (read unique ID), at boot, once; the model answers FF and counts it", () => {
+  testChip("chip live [puya]: quadro-fm1 reads the unique ID (4Bh) once at boot; without a fixture the engine answers FF and counts one unknown read (no longer an unmodelled opcode)", () => {
     const m = Fm1Machine.boot(chipEngine, quadro, { flashChip: "puya", usb: false });
     assert.deepEqual(m.flashEvents(), NO_EVENTS, "nothing before the firmware runs");
+    assert.equal(m.flashUidUnknownReads(), 0);
     let at = null;
-    for (let i = 0; i < 20 && at === null; i++) { m.run(3); if (m.flashEvents().notModeled) at = m.observe().audioMs; }
+    for (let i = 0; i < 20 && at === null; i++) { m.run(3); if (m.flashUidUnknownReads()) at = m.observe().audioMs; }
     assert.ok(at !== null && at <= 30, `issued during start-up (audio ${at} ms)`);
     m.run(1000);
+    assert.equal(m.flashUidUnknownReads(), 1, "once");
     const e = m.flashEvents();
-    assert.deepEqual(e, { unspecified: 0, notModeled: 1, lastNotModeled: 0x4b }, "once, opcode 4Bh, nothing else unmodelled or unspecified in the first second");
+    assert.deepEqual(e, NO_EVENTS, "4Bh is modelled: not an unmodelled opcode, and not an unspecified command either");
     assert.equal(m.flashChipInfo.chip, "puya");
     const u = Fm1Machine.boot(chipEngine, quadro, { flashChip: "uc25hq80", usb: false });
     u.run(1000);
-    assert.deepEqual(u.flashEvents(), NO_EVENTS, "quadro-fm1 1.0 does not recognise B3 60 14, so it never reads the unique ID there");
+    assert.deepEqual(u.flashEvents(), NO_EVENTS);
+    assert.equal(u.flashUidUnknownReads(), 0, "quadro-fm1 1.0 does not recognise B3 60 14, so it never reads the unique ID there");
   });
 
   // ------------------------------------------------------------------------------------------------ full oracle replay through the live engine
@@ -403,11 +482,12 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
     const dir = mkdtempSync(join(tmpdir(), "fm1-oracle-"));
     try {
       const file = join(dir, "oracle.txt");
-      const r = spawnSync(process.execPath, [resolve(import.meta.dirname, "../engine/gen-transcripts.mjs"), file, "--no-partial"], { encoding: "utf8" });
+      const r = spawnSync(process.execPath, [resolve(import.meta.dirname, "../engine/gen-transcripts.mjs"), file, "--no-partial", "--with-ruid"], { encoding: "utf8" });
       assert.equal(r.status, 0, r.stderr);
       const rep = replay(readFileSync(file, "utf8"), p);
       assert.deepEqual(rep.mismatches, [], `mismatches (first ${rep.mismatches.length}) in ${rep.scenarios} scenarios`);
-      assert.ok(rep.scenarios >= 190 && rep.transactions > 20_000 && rep.arrayChecks > 10_000, JSON.stringify(rep));
+      assert.ok(rep.scenarios >= 196 && rep.transactions > 20_000 && rep.arrayChecks > 10_000, JSON.stringify(rep));
+      assert.ok(rep.ruidTx >= 30, `the opt-in 4Bh scenarios ran: ${rep.ruidTx} transactions`);
       assert.ok(rep.errs.unspecified > 500 && rep.errs.notModeled > 100, "the transcripts exercise unspecified and unmodelled cases");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -416,7 +496,7 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
   function replay(text, profile) {
     const machines = {};
     const machine = (hz) => machines[hz] ??= LiveChip.boot(chipEngine, pkg, { mhz: hz / 1e6, flashChip: profile });
-    const rep = { scenarios: 0, transactions: 0, arrayChecks: 0, hashes: 0, wipChecks: 0, power: 0, mismatches: [], errs: { unspecified: 0, notModeled: 0 } };
+    const rep = { scenarios: 0, transactions: 0, ruidTx: 0, arrayChecks: 0, hashes: 0, wipChecks: 0, power: 0, mismatches: [], errs: { unspecified: 0, notModeled: 0 } };
     let c = null, name = "", usTotal = 0, skip = false, lastEvents = null;
     const bad = (ln, what) => { if (rep.mismatches.length < 15) rep.mismatches.push(`${name} line ${ln}: ${what}`); };
     const unhex = (h) => (h === "-" ? [] : h.match(/../g).map((b) => parseInt(b, 16)));
@@ -432,6 +512,8 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
           c.x.fm1_flash_chip(profile === "puya" ? 1 : 2); c.x.fm1_flash_timing(f[3] === "typical" ? 0 : 1);
           c.wp(f[5] === "1");
           c.fill(f[6] === "pat" ? "pat" : "ff");
+          const fx = f[7]?.match(/^uid=([0-9a-f]{32})$/);
+          c.uid(fx ? fx[1] : null);                                                            // the 4Bh unique-ID fixture of the opt-in scenarios (a test fixture)
           lastEvents = c.events(); usTotal = 0; rep.scenarios++;
           break;
         }
@@ -444,13 +526,14 @@ export function registerLiveChipTests(testChip, { chipEngine, pkg, quadro }) {
           if (res === "ADV") break;
           const read = Number(f[3]), tx = unhex(f[4]);
           rep.transactions++;
+          if (tx[0] === 0x4b) rep.ruidTx++;
           const out = c.tx(tx, read), ev = c.events(), r = res.split(" ");
           const dU = ev.unspecified - lastEvents.unspecified, dN = ev.notModeled - lastEvents.notModeled;
           lastEvents = ev;
           if (r[0] === "OK") {
             if (dU || dN) bad(ln, `oracle OK but the chip counted ${dU} unspecified / ${dN} unmodelled`);
             const eout = unhex(r[1]), eunk = unhex(r[2]), status = tx[0] === 0x05 || tx[0] === 0x35;
-            if (read > 0 && eout.length) for (let k = 0; k < read; k++) if (((out[k] ^ eout[k]) & (status ? ~eunk[k] & 0xff : 0xff)) !== 0) { bad(ln, `tx ${f[4]} byte ${k}: ${out[k].toString(16)} vs oracle ${eout[k].toString(16)}`); break; }
+            if (read > 0 && eout.length) for (let k = 0; k < read; k++) if (((out[k] ^ eout[k]) & (~eunk[k] & 0xff)) !== 0) { bad(ln, `tx ${f[4]} byte ${k}: ${out[k].toString(16)} vs oracle ${eout[k].toString(16)}`); break; }
           } else {
             const nm = r[2].startsWith("nm.") || r[2] === "cmd.unknown";
             rep.errs[nm ? "notModeled" : "unspecified"]++;

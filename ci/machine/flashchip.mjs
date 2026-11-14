@@ -52,6 +52,33 @@ export function resolveFlashChipOptions({ flashChip = null, flashTiming = null, 
   return { chip, timing: chip === "legacy" ? null : timing ?? "typical" };
 }
 
+/**
+ * The 128-bit unique ID fixture 4Bh (Read Unique ID) returns under a chip profile: 32 hex digits or 16 bytes, in transmission order (byte 0 first, bits 127-120).
+ * It is a caller's TEST FIXTURE: the real value is per device and in neither datasheet, and nothing here ever supplies one. Returns normalised lower-case hex.
+ */
+export function parseFlashUid(input) {
+  let bytes;
+  if (typeof input === "string") {
+    const h = input.trim().replace(/^0x/i, "");
+    if (!/^[0-9a-fA-F]{32}$/.test(h)) throw new FlashChipError("invalid-uid", `flashUid must be 32 hex digits (16 bytes), got ${JSON.stringify(input)}`);
+    bytes = h.match(/../g).map((x) => parseInt(x, 16));
+  } else if (Array.isArray(input) || input instanceof Uint8Array) {
+    bytes = Array.from(input);
+    if (bytes.length !== 16 || !bytes.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) throw new FlashChipError("invalid-uid", "flashUid must be exactly 16 bytes (0-255)");
+  } else {
+    throw new FlashChipError("invalid-uid", `flashUid must be 32 hex digits or 16 bytes, got ${JSON.stringify(input)}`);
+  }
+  return bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The four big-endian words fm1_flash_uid_set takes (word 0 holds bytes 0-3, byte 0 in the top byte). */
+export const uidWords = (hex) => [0, 1, 2, 3].map((i) => parseInt(hex.slice(8 * i, 8 * i + 8), 16) >>> 0);
+
+/** Configure the unique-ID fixture on a freshly booted engine instance (needs a chip profile). */
+export function applyFlashUid(x, hex) {
+  if (x.fm1_flash_uid_set(...uidWords(hex)) !== 0) throw new FlashChipError("engine-refused", "the engine refused the unique-ID fixture");
+}
+
 /** Select the profile on a freshly booted engine instance (before its first render). Returns what was applied. */
 export function applyFlashChip(x, { chip, timing }) {
   if (chip === "legacy") return null;

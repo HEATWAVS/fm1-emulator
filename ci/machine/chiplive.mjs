@@ -4,6 +4,7 @@
 //
 // The machine is booted but never rendered, so nothing else touches the chip and time moves only when advance() says so.
 import { Fm1Machine } from "./machine.mjs";
+import { applyFlashUid, parseFlashUid } from "./flashchip.mjs";
 
 const SPI0 = 0x11c00;            // SPI0 CON; BUF is +8
 const CS = 0x500c0;              // GPIO PD0 OUT: the flash chip select (low = selected)
@@ -50,6 +51,8 @@ export class LiveChip {
   /** WP# pin level. */
   wp(high) { this.x.fm1_test_set_wp(high ? 1 : 0); }
   id() { return this.tx([0x9f], 3); }
+  /** Configure (hex, 32 digits) or clear (null) the 4Bh unique-ID fixture of this machine's chip. A test fixture, never a device ID. */
+  uid(hex) { if (hex === null) this.x.fm1_flash_uid_clear(); else applyFlashUid(this.x, parseFlashUid(hex)); }
 
   /** WREN, one command, then let every cycle end. */
   run(bytes, read = 0) { this.wren(); const out = this.tx(bytes, read); this.settle(); return out; }

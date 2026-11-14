@@ -110,10 +110,10 @@ case of "a part that does not answer 0x4B: all FF or all 0" and then falls back 
 is the HAL's behaviour, not a statement about that exact binary.
 
 **Was it specified by the Stage A sources? Not at the time.** Stage A cited `4Bh` only in the command listings, so the model refused it (D42). The 4Bh Stage A extension
-(next section) has since read both dedicated sections and added it to the **reference model**. The **Rust engine has not been changed**: it still answers `FF` and counts the
-command, and the original model's `FM1-` pattern remains the legacy profile's answer. Consequences for firmware under a profile: (1) quadro-fm1 and similar firmware take the
-documented "no unique ID" path, so a profile run does **not** reproduce the WiFi MAC / BLE name that the original model's fake `FM1-` pattern (`46 4D 31 2D` repeated) produced;
-(2) the engine port of the extended model is the next, unapproved step.
+(next section) then read both dedicated sections and added it to the **reference model**, and the **engine port** (D48-D52) implements it in the chip-profile engine for both
+profiles. The original model's `FM1-` pattern remains the **legacy** profile's answer, unchanged. Consequences for firmware under a profile: the ID **value** is in neither datasheet, so the engine has no ID unless a test configures one (`flashUid`). With none, 4Bh answers `FF` and the read is counted
+as unknown, so quadro-fm1 and similar firmware take the documented "no unique ID" path, and a profile run does **not** reproduce the WiFi MAC / BLE name that the original model's fake `FM1-` pattern
+(`46 4D 31 2D` repeated) produced. With a fixture configured they behave as the firmware's source says (see "Engine port results" below).
 
 **Attribution (Stage C4).** The 4Bh answer is the only chip behaviour that changes quadro-fm1's and fm1-field's flash content between legacy and the Puya profile: a throwaway scratch engine returning the original `FM1-` pattern for `4Bh` made both firmware's flash identical to legacy (fm1-field's three extra writes disappear). So under a profile these firmware take their no-unique-ID path (fm1-field then stores generated data). FF is **not** equivalent to the `FM1-` pattern.
 
@@ -138,7 +138,24 @@ Table-7 p.13), with the figures and tables rendered and read as images. Registry
 | Differences between chips | none in structure | none in structure; only Table-7's explicit `00H` bytes | the dummy-value row |
 
 Not stated anywhere in either document (so not modelled): whether protection bits or SRP affect it, whether deep power-down or reset affects it, any maximum clock frequency for RUID,
-and the UID's internal structure. **Not changed:** the legacy (original) model keeps its fake `FM1-` pattern; the Rust engine still answers `FF`.
+and the UID's internal structure. **Not changed:** the legacy (original) model keeps its fake `FM1-` pattern.
+
+## 4Bh engine port: results (2026-11-13)
+
+The chip-profile engine implements 4Bh exactly as the reference model: opcode, four dummy bytes, then 16 ID bytes byte 0 first; refusals counted as unspecified (`ruid.malformed`,
+`ruid.beyond-128-bits`, `ruid.busy`, and `ruid.dummy-values` on the UC25HQ80 only); the fixture survives power cycles. With **no fixture** the bytes are `FF` and the read is counted as unknown
+(`fm1_flash_events(3)`), so firmware behaves as it did before the port. Firmware effects (quadro-fm1 and fm1-field, Puya, 4 s, `usb: false`; fixtures are test values, never device IDs):
+
+| unique ID the chip returns | quadro-fm1 | fm1-field |
+|---|---|---|
+| legacy model (`FM1-` pattern) | 3 writes; reference flash | 0 writes |
+| none configured (`FF`, counted unknown) | 3 writes; flash differs from legacy | 3 writes (34 bytes, sector `0xDE000`) |
+| the `FM1-` pattern as a fixture | **flash identical to legacy** | **0 writes, flash identical to legacy** |
+| an arbitrary value | 3 writes; other bytes, repeatable | 0 writes |
+| 16 bytes of `00` or of `FF` | **same as none configured** | **same as none configured** |
+
+So the unique-ID-dependent behaviour is fully explained by the ID the firmware reads, and an ID of identical bytes is treated as "no unique ID", as fm1-base's `wifi.c` says. These are firmware
+behaviours, not model defects.
 
 ## What real firmware does (AURORA fm1_flash.h)
 

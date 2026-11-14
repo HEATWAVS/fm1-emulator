@@ -280,13 +280,14 @@ if (process.argv.includes("--with-ruid")) {
     begin(`ruid-${profile}`, profile, "typical", { uid: UIDHEX, image: "pat" });
     for (const n of [16, 1, 2, 8, 15, 0, 16]) t(RUID, { read: n });
     t([0x4b, 0xff, 0xaa, 0x55, 0x12], { read: 16 }); t([0x4b, 0, 0, 0, 0xa5], { read: 16 }); t([0x4b, 1, 0, 0, 0], { read: 4 }); t([0x4b, 0, 0x80, 0, 0], { read: 4 }); t([0x4b, 0, 0, 0xff, 0], { read: 4 });
-    for (const tx of [[0x4b], [0x4b, 0], [0x4b, 0, 0], [0x4b, 0, 0, 0], [0x4b, 0, 0, 0, 0, 0]]) t(tx, { read: 1 });
+    // only shapes the byte stream can express: with CS# rising before the fourth dummy byte, any byte after it would be a dummy slot, not a data byte
+    for (const [tx, r] of [[[0x4b], 1], [[0x4b, 0], 1], [[0x4b, 0, 0], 0], [[0x4b, 0, 0, 0], 0]]) t(tx, { read: r });
     for (const n of [17, 32, 100]) t(RUID, { read: n });
     wren(); t(RUID, { read: 16 }); rdsr(); t([0x04]); rdsr();
     for (const tx of [[0x02, 0x01, 0x00, 0x00, 0x0f], [0x20, 0x02, 0x00, 0x00], [0x01, 0x04, 0x00]]) { wren(); t(tx); t(RUID, { read: 16 }); t(RUID, { read: 16, adv: 1 }); idle(); t(RUID, { read: 16 }); rdsr(); }
     wren(); t([0x60]); idle(); t(RUID, { read: 16 }); power(); t(RUID, { read: 16 }); rdsr(); flushDirty(); end();
     begin(`ruid-nouid-${profile}`, profile, "maximum", { image: "ff" });
-    t(RUID, { read: 16 }); t(RUID, { read: 3 }); t([0x4b], { read: 16 }); t(RUID, { read: 17 }); rdsr(); end();
+    t(RUID, { read: 16 }); t(RUID, { read: 3 }); t([0x4b], { read: 0 }); t(RUID, { read: 17 }); rdsr(); end();
   }
 }
 
