@@ -85,7 +85,7 @@ const gitEnv = { ...process.env, GIT_CEILING_DIRECTORIES: opt.out };           /
 const apply = (args) => execFileSync("git", ["-c", "core.autocrlf=false", "apply", ...args, patchPath], { cwd: src, env: gitEnv, stdio: "inherit" });
 apply(["--check"]);
 apply([]);
-console.log("  applied cleanly (fm1-soc: lib.rs, spiflash.rs changed, spichip.rs and tests/chip_oracle.rs new; fm1-web: lib.rs changed)");
+console.log("  applied cleanly (fm1-soc: lib.rs, spiflash.rs, periph.rs, machine.rs changed, spichip.rs and tests/chip_oracle.rs new; fm1-web: lib.rs changed)");
 
 // ------------------------------------------------------------------ 6 generated tables
 step(6, "generating spichip_tables.rs from ci/machine/chipspec.mjs");

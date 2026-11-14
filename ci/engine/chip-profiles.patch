@@ -1,5 +1,5 @@
 diff --git a/crates/fm1-soc/src/lib.rs b/crates/fm1-soc/src/lib.rs
-index b342349..426523d 100644
+index b342349..6c2560a 100644
 --- a/crates/fm1-soc/src/lib.rs
 +++ b/crates/fm1-soc/src/lib.rs
 @@ -35,12 +35,15 @@ pub mod periph;
@@ -18,28 +18,703 @@ index b342349..426523d 100644
  
  pub const XIP_BASE: u32 = 0x0200_0000;
  pub const RAM_BASE: u32 = 0x01c0_0000;
-@@ -960,6 +963,7 @@ impl Soc {
+@@ -201,6 +204,9 @@ pub struct Soc {
+     /// the updater gives every firmware: April OS keeps its samples at flash 0x74000, read
+     /// through XIP 0x02070000, and waits at boot until it finds them or a blank chip's 0xff).
+     pub xip_flash: bool,
++    /// TERMINAL: the flash chip lost power in a scheduled or harness-initiated cut (Component 5). Never a CPU fault: the cores stop (`machine::POWER_CUT`), nothing
++    /// resumes, and the record of the cut (`flash.chip.last_cut()`) holds the requested deadline and the actual firing cycle.
++    pub power_cut: bool,
+     /// The SFC decrypts the app area on the fly with the chip key (packages are installed
+     /// scrambled): with a key (`sfc_boot`), what the window shows from the chip (a write, a
+     /// restored flash file) is read through SFCENC: CON bit 0 decrypts, bit 1 leaves the plain
+@@ -251,6 +257,59 @@ fn dbg_line(addr: u32) -> &'static str {
+ }
+ 
+ impl Soc {
++    /// After a flash write: pick up the cut deadline of a cycle the chip just accepted (Component 5, Stage 5C-2) and make it an event. A deadline already due (a cut at
++    /// the accept itself) fires right here, before the CPU can read anything else, so even core 1 (which has no clock) cannot see the completed data.
++    fn flash_cut_schedule(&mut self) {
++        let Some(at) = self.flash.cut_deadline() else { return };
++        if self.periph.flash_cut_at != at {
++            self.periph.flash_cut_at = at;
++            self.periph.next_due = 0; // recompute: the deadline is now an input of next_event()
++        }
++        if at <= self.periph.cycles {
++            self.sync_flash_cut();
++        }
++    }
++
++    /// Fire a due flash cut now. Idempotent and nearly free when nothing is scheduled. Called by the event (`advance`), by the flash write path, before core 1 runs and
++    /// (5C-3) on return from every export that moves the clock.
++    pub fn sync_flash_cut(&mut self) {
++        if self.periph.flash_cut_at > self.periph.cycles {
++            return;
++        }
++        self.apply_flash_cut();
++    }
++
++    /// Settle the chip at the current cycle (cut precedence: a due cut fires before any completion), restore the placeholder, refresh the XIP window, and go terminal.
++    fn apply_flash_cut(&mut self) {
++        let (now, hz) = (self.periph.cycles, self.periph.hz);
++        self.flash.sync_cut(now, hz);
++        self.periph.flash_cut_at = self.flash.cut_deadline().unwrap_or(u64::MAX);
++        if self.flash.power_cut() {
++            self.power_cut = true;
++            self.periph.next_due = 0; // the run loops look at `power_cut` right after the next event pass
++        }
++        self.sync_xip();
++    }
++
++    /// Arm a power cut on the flash chip (Component 5). The chip validates a trigger against its clock rate, which the SoC sets before every access, so this sets it first:
++    /// arming before any SPI access would otherwise be judged at the chip's power-on default.
++    pub fn arm_flash_fault(&mut self, spec: crate::spichip::FaultSpec) -> Result<(), crate::spichip::FaultError> {
++        let (now, hz) = (self.periph.cycles, self.periph.hz);
++        let Some(chip) = self.flash.chip.as_mut() else { return Err(crate::spichip::FaultError::NoCycle) };
++        chip.set_clock(now, hz);
++        chip.arm_fault(spec)
++    }
++
++    /// Harness-initiated power cut now (the reference model's `powerCut()`): the chip's `power_cut`, then the same terminal bookkeeping as a scheduled one.
++    pub fn power_cut_flash(&mut self) -> Result<crate::spichip::FaultRecord, crate::spichip::FaultError> {
++        let (now, hz) = (self.periph.cycles, self.periph.hz);
++        let Some(chip) = self.flash.chip.as_mut() else { return Err(crate::spichip::FaultError::NoCycle) };
++        chip.set_clock(now, hz);
++        let rec = chip.power_cut()?;
++        self.apply_flash_cut();
++        Ok(rec)
++    }
++
+     /// After an erase or page program: the XIP window shows the flash chip, also where the
+     /// window's contents come from the package (`xip`, the app area as installed). A booted
+     /// package's window reaches flash 0x93000, and April OS writes its samples from 0x74000
+@@ -365,6 +424,7 @@ impl Soc {
+             cpu1_released_once: false,
+             audio_trace: std::env::var_os("FM1_AUDIO_TRACE").is_some(),
+             xip_flash: true,
++            power_cut: false,
+             sfc_key: None,
+             sfc_con: 0,
+             sfc_unenc: (0, 0),
+@@ -453,6 +513,9 @@ impl Soc {
+         if let Some((at, b)) = due.uart_rx {
+             self.write8(at, b);
+         }
++        if due.flash_cut {
++            self.sync_flash_cut();
++        }
+         if due.usb_frame {
+             let pullup = self.sfr_get(usb::USB_IO_CON0) & 0x40 != 0;
+             let mut u = std::mem::take(&mut self.usb);
+@@ -960,7 +1023,9 @@ impl Soc {
                  // PD0 drives the flash chip select; PA1/PA3/PA4 clock the
                  // key-matrix shift registers
                  if addr == 0x500c0 {
 +                    self.flash.set_clock(self.periph.cycles, self.periph.hz);
                      self.flash.set_cs(value & 1 == 0);
++                    self.flash_cut_schedule();
                      self.sync_xip();
                  }
-@@ -972,6 +976,7 @@ impl Soc {
+                 self.periph.write(addr, value);
+@@ -972,7 +1037,9 @@ impl Soc {
                  }
              }
              Region::Spi0 => {
 +                self.flash.set_clock(self.periph.cycles, self.periph.hz);
                  self.flash.write(addr, value);
++                self.flash_cut_schedule();
                  self.sync_xip();
              }
+             Region::Iomap => self.sfr_set(addr, value),
+diff --git a/crates/fm1-soc/src/machine.rs b/crates/fm1-soc/src/machine.rs
+index b021ae0..1f0661f 100644
+--- a/crates/fm1-soc/src/machine.rs
++++ b/crates/fm1-soc/src/machine.rs
+@@ -14,6 +14,10 @@ use fm1_core::{Bus, Cpu, PlainState};
+ /// cpu0 runs in slices of this many instructions once cpu1 is running, cpu1 after each.
+ pub const SLICE: u32 = 1024;
+ 
++/// What the run loops return when the flash chip lost power (Component 5): a terminal state of the machine, not a CPU fault. Callers tell it apart from a halt
++/// by `Soc::power_cut` (or by this text).
++pub const POWER_CUT: &str = "power cut";
++
+ /// cpu1's view of the SoC: no clock, a budget of ticks instead.
+ pub struct Core1Bus<'a> {
+     pub soc: &'a mut Soc,
+@@ -467,6 +471,9 @@ pub fn run_blocks(cpu: &mut Cpu, soc: &mut Soc, n: u32, pending_tick: &mut bool)
+             soc.advance(0);
+         }
+         ticked = false;
++        if soc.power_cut {
++            return Err(POWER_CUT.to_string()); // the chip lost power at this cycle: nothing runs after it
++        }
+         soc.periph.in_isr = !cpu.irq_levels.is_empty();
+         if soc.periph.any_pending() {
+             if let Some((irq, prio)) = soc.pending_irq() {
+@@ -540,6 +547,9 @@ pub fn run_cpu1(c1: &mut Cpu, soc: &mut Soc, cycles: u64) -> Result<(), String>
+     }
+     let probe = (c1.pc, c1.regs, c1.sp);
+     let mut left = cycles.min(1 << 20);
++    if soc.power_cut {
++        return Err(POWER_CUT.to_string());
++    }
+     // first a block at a time, looking for the way back to where it started (a polling loop
+     // goes round in well under this); then, busy, in big stretches
+     let mut probing = 512u64;
+@@ -635,6 +645,12 @@ pub fn run_dual(
+         }
+         done += k;
+         let dt = soc.periph.cycles - c0;
++        // cpu1 has no clock: it sees the SoC at the cycle where cpu0's slice ended. A cut due by then (cpu0's last tick may still be pending) must have fired
++        // before cpu1 reads anything, and a cut ends the machine (Component 5).
++        soc.sync_flash_cut();
++        if soc.power_cut {
++            return Err(POWER_CUT.to_string());
++        }
+         run_cpu1(c1, soc, dt)?;
+     }
+     Ok(())
+@@ -1120,4 +1136,484 @@ mod tests {
+             assert_eq!((a.pc, a.insn_count, sa.periph.cycles), (b.pc, b.insn_count, sb.periph.cycles), "call {i}");
+         }
+     }
++
++    // ================================================================================================================ Component 5, Stage 5C-2: the flash power cut as a SoC event
++    // A program is accepted at cycle `T0` with a cut `after` cycles later. The cut is an input of `Periph::next_event()`, so everything that already stops at a timed event
++    // (the interpreter, the JIT, idle skips, loop skips, the bulk advance) stops at it. D33 (the array changes at accept) means the window shows the completed word between the
++    // accept and the cut; the cut puts the pre-image (erased, 0xFF) back. A program that wrote 0x78563412 over 0xFFFFFFFF is the marker.
++    use crate::spichip::{ChipKind, FaultAt, FaultError, FaultOp, FaultSpec, Timing};
++    use crate::XIP_FLASH_OFFSET;
++
++    const FCS: u32 = 0x500c0;
++    const FSPI: u32 = 0x11c00;
++    /// inside the xip Vec the machine resizes to (Region::Xip, what instruction fetch and the JIT read)
++    const XIP_IDX: usize = 0x1000;
++    /// past the xip Vec: Region::XipFlash reads the chip's array directly
++    const FLASH_IDX: usize = 0x10000;
++    const T0: u64 = 5_000;
++    const DATA: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
++    const COMPLETED: u32 = 0x7856_3412;
++    const PRE_IMAGE: u32 = 0xffff_ffff;
++
++    fn spi(soc: &mut Soc, bytes: &[u8]) {
++        soc.write32(FCS, 0);
++        for &b in bytes {
++            soc.write32(FSPI, 0);
++            soc.write32(FSPI + 8, b as u32);
++        }
++        soc.write32(FCS, 1);
++    }
++
++    fn program(soc: &mut Soc, idx: usize) {
++        let a = XIP_FLASH_OFFSET + idx;
++        spi(soc, &[0x06]);
++        spi(soc, &[0x02, (a >> 16) as u8, (a >> 8) as u8, a as u8, DATA[0], DATA[1], DATA[2], DATA[3]]);
++    }
++
++    /// What every path a reader has shows at `idx`: (Bus::read32, Bus::fetch32, the raw xip word if the Vec holds it, the chip's array byte).
++    fn views(soc: &mut Soc, idx: usize) -> (u32, u32, Option<u32>, u8) {
++        let raw = soc.xip.get(idx..idx + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
++        (soc.read32(XIP_BASE + idx as u32), soc.fetch32(XIP_BASE + idx as u32), raw, soc.flash.mem[XIP_FLASH_OFFSET + idx])
++    }
++
++    /// A machine with a Puya chip and an erased XIP page, the program accepted at `T0`, a cut `after` cycles later (`None`: nothing armed).
++    fn cut_machine(code: &[u8], regs: &[(usize, u32)], skip: bool, jit: bool, after: Option<u64>, idx: usize) -> (Cpu, Soc) {
++        let (mut cpu, mut soc) = machine(code, regs, skip);
++        cpu.jit_on = jit;
++        soc.xip.resize(0x2000, 0xff);
++        for b in &mut soc.xip[code.len()..] {
++            *b = 0xff; // the window beyond the code is erased flash
++        }
++        soc.flash.set_chip(Some((ChipKind::Puya, Timing::Typical)));
++        if let Some(n) = after {
++            soc.arm_flash_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AfterCycles(n) }).unwrap();
++        }
++        soc.periph.cycles = T0;
++        soc.periph.next_due = 0;
++        program(&mut soc, idx);
++        (cpu, soc)
++    }
++
++    /// run until the machine stops, in chunks of the given sizes (cycled); returns the error text and the state at the stop
++    fn run_to_the_end(cpu: &mut Cpu, soc: &mut Soc, chunks: &[u32]) -> (String, u32, [u32; 16], u64, u64) {
++        let mut t = false;
++        let mut i = 0;
++        let mut total = 0u64;
++        loop {
++            let n = chunks[i % chunks.len()];
++            i += 1;
++            match run_blocks(cpu, soc, n, &mut t) {
++                Ok(k) => total += k as u64,
++                Err(e) => return (e, cpu.pc, cpu.regs, cpu.insn_count, soc.periph.cycles),
++            }
++            assert!(total < 20_000_000, "the machine never stopped");
++        }
++    }
++
++    const SPIN: [u8; 6] = [0x60, 0xff, 0x00, 0x20, 0xfd, 0xff];
++
++    /// A polling loop the loop skip takes (it stores what is already there, reads a pin that stays up): [0x1000] = r3; r2 = [PA_IN]; while bit 5 is set.
++    fn poll_code() -> (Vec<u8>, Vec<(usize, u32)>) {
++        (
++            [STORE.as_slice(), &LOAD, &while_set(8)].concat(),
++            vec![(1, PA_IN + 544), (5, RAM_BASE + 0x1000 + 128), (3, 0xdead_beef)],
++        )
++    }
++
++    // ---------------------------------------------------------------- execution paths
++
++    /// Normal execution, the JIT, the loop skip and both together, in one big call and in uneven chunks: the machine stops at the scheduled cycle, with the same core state,
++    /// the same instruction count and the same clock every time; and the record carries the requested deadline and the actual firing cycle.
++    #[test]
++    fn a_scheduled_cut_stops_every_execution_path_at_its_exact_cycle() {
++        const AFTER: u64 = 100_000;
++        let d = T0 + AFTER;
++        let (code, regs) = poll_code();
++        let mut first = None;
++        let chunkings: [&[u32]; 4] = [&[5_000_000], &[1024, 2048, 1500, 3001, 1111], &[100_000, 50_000], &[1]];
++        for (ci, chunks) in chunkings.iter().enumerate() {
++            for (skip, jit) in [(false, false), (false, true), (true, false), (true, true)] {
++                if chunks == &[1u32] && (skip || jit) {
++                    continue; // one instruction a call: the skip's probe needs 1024 left, the JIT blocks of more
++                }
++                let tag = format!("chunking {ci} skip {skip} jit {jit}");
++                let (mut cpu, mut soc) = cut_machine(&code, &regs, skip, jit, Some(AFTER), XIP_IDX);
++                assert_eq!(soc.flash.cut_deadline(), Some(d), "{tag}: the chip's deadline");
++                assert_eq!(soc.periph.flash_cut_at, d, "{tag}: the SoC took it as an event");
++                let (err, pc, regs_at_stop, insns, cycles) = run_to_the_end(&mut cpu, &mut soc, chunks);
++                assert_eq!(err, POWER_CUT, "{tag}: a power cut is its own stop, not a CPU fault text");
++                assert!(soc.power_cut, "{tag}");
++                assert_eq!(cycles, d, "{tag}: stopped at exactly the deadline");
++                let rec = soc.flash.chip.as_ref().unwrap().last_cut().unwrap();
++                assert_eq!((rec.started_at, rec.cut_at, rec.detected_at), (T0, d, d), "{tag}: requested deadline and actual firing cycle");
++                assert_eq!(soc.periph.flash_cut_at, u64::MAX, "{tag}: the event is spent");
++                if skip && chunks[0] >= 1024 {
++                    assert!(soc.loop_skip.skipped > 10_000, "{tag}: the loop skip really ran across the deadline ({} skipped)", soc.loop_skip.skipped);
++                }
++                let got = (pc, regs_at_stop, insns, cycles);
++                match &first {
++                    None => first = Some(got),
++                    Some(f) => assert_eq!(&got, f, "{tag}: the stop state differs from the first run's"),
++                }
++            }
++        }
++        // and the instruction count is what the clock says: one cycle an instruction, the loop skip included
++        let (_, _, insns, cycles) = first.unwrap();
++        assert!(insns + 1 >= cycles - T0 && insns <= cycles - T0, "{insns} instructions for {} cycles", cycles - T0);
++    }
++
++    /// An idle instruction jumps to just before the next event; with the cut as an event the jump ends at it, and without the idle skip the result is the same.
++    #[test]
++    fn an_idle_skip_stops_at_the_cut_cycle() {
++        const AFTER: u64 = 100_000;
++        let code = [[0x01u8, 0x00].as_slice(), &[0x60, 0xff, 0x00, 0x20, 0xfc, 0xff]].concat(); // idle; goto idle
++        let mut cycles_seen = Vec::new();
++        for skip_idle in [true, false] {
++            for jit in [false, true] {
++                let (mut cpu, mut soc) = cut_machine(&code, &[], false, jit, Some(AFTER), XIP_IDX);
++                soc.periph.skip_idle = skip_idle;
++                let before = soc.periph.skipped;
++                let (err, _, _, insns, cycles) = run_to_the_end(&mut cpu, &mut soc, &[1_000_000]);
++                assert_eq!((err.as_str(), cycles), (POWER_CUT, T0 + AFTER), "skip_idle {skip_idle} jit {jit}");
++                let rec = soc.flash.chip.as_ref().unwrap().last_cut().unwrap();
++                assert_eq!((rec.cut_at, rec.detected_at), (T0 + AFTER, T0 + AFTER));
++                if skip_idle {
++                    assert!(soc.periph.skipped - before > 90_000, "the idle skip jumped ({})", soc.periph.skipped - before);
++                    assert!(insns < 100, "the jump replaced the waiting instructions: {insns}");
++                } else {
++                    assert!(insns > 90_000, "without the skip every cycle is an instruction: {insns}");
++                }
++                cycles_seen.push(cycles);
++            }
++        }
++        assert!(cycles_seen.iter().all(|&c| c == T0 + AFTER));
++    }
++
++    // ---------------------------------------------------------------- what a reader can see, and when
++
++    /// Between the accept and the cut the window shows the completed word (D33); at the deadline every view returns to the pre-image, in the same step that stops the machine.
++    /// The CPU's data read (Region::Xip, Region::XipFlash), instruction fetch and the raw array the JIT reads are checked.
++    #[test]
++    fn every_xip_view_flips_exactly_at_the_deadline() {
++        const AFTER: u64 = 3_000;
++        let d = T0 + AFTER;
++        let (code, regs) = poll_code();
++        for idx in [XIP_IDX, FLASH_IDX] {
++            for jit in [false, true] {
++                let (mut cpu, mut soc) = cut_machine(&code, &regs, false, jit, Some(AFTER), idx);
++                let v = views(&mut soc, idx);
++                assert_eq!((v.0, v.1, v.3), (COMPLETED, COMPLETED, 0x12), "idx {idx:#x}: after the accept the completed data shows (D33)");
++                if idx == XIP_IDX {
++                    assert_eq!(v.2, Some(COMPLETED));
++                }
++                let mut t = false;
++                // one instruction at a time up to the cycle before the deadline: nothing has flipped
++                while soc.periph.cycles + 1 < d {
++                    assert_eq!(run_blocks(&mut cpu, &mut soc, 1, &mut t), Ok(1));
++                    assert!(!soc.power_cut);
++                }
++                let v = views(&mut soc, idx);
++                assert_eq!((v.0, v.1, v.3), (COMPLETED, COMPLETED, 0x12), "idx {idx:#x} jit {jit}: still the completed word one cycle before the deadline");
++                let mut stopped = None;
++                for _ in 0..4 {
++                    if let Err(e) = run_blocks(&mut cpu, &mut soc, 1, &mut t) {
++                        stopped = Some(e);
++                        break;
++                    }
++                }
++                assert_eq!(stopped.as_deref(), Some(POWER_CUT), "idx {idx:#x} jit {jit}");
++                assert_eq!(soc.periph.cycles, d);
++                let v = views(&mut soc, idx);
++                assert_eq!((v.0, v.1, v.3), (PRE_IMAGE, PRE_IMAGE, 0xff), "idx {idx:#x} jit {jit}: at the deadline every reader sees the pre-image");
++                if idx == XIP_IDX {
++                    assert_eq!(v.2, Some(PRE_IMAGE), "the raw window the JIT reads");
++                }
++                assert_eq!(soc.flash.chip.as_ref().unwrap().indeterminate(), &[(XIP_FLASH_OFFSET + idx, XIP_FLASH_OFFSET + idx + 3)], "and the list says those bytes are unknown");
++            }
++        }
++    }
++
++    /// A cut at the accept fires inside the write that accepts it: nothing, not even a core with no clock, runs between the accept and the cut.
++    #[test]
++    fn a_cut_at_the_accept_fires_in_the_write_path() {
++        let (code, regs) = poll_code();
++        for idx in [XIP_IDX, FLASH_IDX] {
++            let (mut cpu, mut soc) = cut_machine(&code, &regs, false, false, Some(0), idx);
++            assert!(soc.power_cut, "terminal already, before any instruction");
++            let v = views(&mut soc, idx);
++            assert_eq!((v.0, v.1, v.3), (PRE_IMAGE, PRE_IMAGE, 0xff), "the pre-image shows already");
++            assert_eq!(soc.periph.next_due, 0, "the run loop looks at once");
++            let insns = cpu.insn_count;
++            let mut t = false;
++            assert_eq!(run_blocks(&mut cpu, &mut soc, 1000, &mut t), Err(POWER_CUT.to_string()));
++            assert_eq!(cpu.insn_count, insns, "no instruction ran after the cut");
++            let rec = soc.flash.chip.as_ref().unwrap().last_cut().unwrap();
++            assert_eq!((rec.started_at, rec.cut_at, rec.detected_at), (T0, T0, T0));
++        }
++    }
++
++    // ---------------------------------------------------------------- completion cannot win
++
++    /// However the clock gets past the end of the cycle, with nothing looking at the chip, the cut has fired and the cycle has not completed:
++    /// the bulk advance, a raw jump followed by a sync, and a raw jump followed by an SPI access.
++    #[test]
++    fn completion_cannot_win_over_a_due_cut() {
++        const AFTER: u64 = 100_000;
++        let (code, regs) = poll_code();
++        let end = |soc: &Soc| soc.flash.chip.as_ref().unwrap().last_cut().map(|r| (r.cut_at, r.detected_at, r.end_would_be_at));
++        for how in 0..3 {
++            let (_cpu, mut soc) = cut_machine(&code, &regs, false, false, Some(AFTER), XIP_IDX);
++            let pp = soc.flash.chip.as_mut().unwrap().busy_until().unwrap() - T0;
++            assert!(pp > AFTER, "the program runs {pp} cycles; the cut is {AFTER} in");
++            let jump = 10 * pp;
++            match how {
++                0 => soc.advance(jump),                                    // the bulk advance (a core held by the other): the event fires at its end
++                1 => {
++                    soc.periph.cycles += jump;                               // a raw jump (the test hook): nothing fires until a sync
++                    assert!(!soc.power_cut);
++                    soc.sync_flash_cut();
++                }
++                _ => {
++                    soc.periph.cycles += jump;
++                    spi(&mut soc, &[0x05]);                                  // any SPI access first fires the due cut
++                }
++            }
++            assert!(soc.power_cut, "how {how}");
++            let st = soc.flash.chip.as_mut().unwrap().fault_state();
++            assert_eq!((st.completed, st.interrupted, st.powered_off), (0, 1, true), "how {how}: the cycle never completed");
++            let (cut, detected, end_would_be) = end(&soc).unwrap();
++            assert_eq!((cut, end_would_be), (T0 + AFTER, T0 + pp), "how {how}");
++            assert!(detected >= cut + 10 * pp - AFTER, "how {how}: noticed late ({detected}), recorded at its own deadline ({cut})");
++            let v = views(&mut soc, XIP_IDX);
++            assert_eq!((v.0, v.3), (PRE_IMAGE, 0xff), "how {how}: the pre-image, not the completed word");
++            // the control: no cut armed, the same jump: the cycle completes
++            let (_c2, mut k) = cut_machine(&code, &regs, false, false, None, XIP_IDX);
++            k.advance(jump);
++            k.flash.set_clock(k.periph.cycles, k.periph.hz); // (the chip learns the time at its next access)
++            let st = k.flash.chip.as_mut().unwrap().fault_state();
++            assert_eq!((st.completed, st.interrupted, k.power_cut), (1, 0, false), "how {how}: control completes");
++        }
++    }
++
++    // ---------------------------------------------------------------- core 1
++
++    /// cpu1 has no clock: it sees the SoC at the cycle where cpu0's slice ended, and time stands still while it runs. A cut due by the end of the slice (cpu0's last tick may
++    /// still be pending) must have fired before cpu1 reads anything: the run ends at the cut and cpu1 has run nothing. A cut due later cannot be seen by cpu1 in that slice, so
++    /// cpu1 legitimately reads the completed word first. Checked for every offset around the slice end, with the loop skip off and on.
++    #[test]
++    fn core_1_never_runs_after_the_deadline_even_when_the_slice_ends_on_it() {
++        let mut at_the_boundary = 0;
++        for skip in [false, true] {
++            for after in (SLICE as u64 - 6)..=(SLICE as u64 + 6) {
++                let (code, regs) = poll_code();
++                let mut code = code;
++                let c1_at = code.len() as u32;
++                code.extend_from_slice(&LOAD); // cpu1: r2 = [r1 - 544] (the XIP word the program changed), then spin
++                code.extend_from_slice(&SPIN);
++                let (mut cpu, mut soc) = cut_machine(&code, &regs, skip, false, Some(after), FLASH_IDX);
++                let mut c1 = Cpu::new(XIP_BASE + c1_at);
++                c1.core_id = 1;
++                c1.regs[1] = XIP_BASE + FLASH_IDX as u32 + 544;
++                let mut c1 = Some(c1);
++                let mut t = false;
++                let r = run_dual(&mut c1, &mut soc, 4 * SLICE, 1 << 20, false, |s, k| run_blocks(&mut cpu, s, k, &mut t));
++                let tag = format!("skip {skip} after {after}");
++                assert_eq!(r, Err(POWER_CUT.to_string()), "{tag}");
++                assert!(soc.power_cut, "{tag}");
++                assert_eq!(soc.periph.cycles, T0 + after, "{tag}: the run ends at the deadline");
++                let rec = soc.flash.chip.as_ref().unwrap().last_cut().unwrap();
++                assert_eq!((rec.cut_at, rec.detected_at), (T0 + after, T0 + after), "{tag}");
++                let seen = c1.as_ref().unwrap().regs[2];
++                if after <= SLICE as u64 {
++                    assert_eq!(seen, 0, "{tag}: cpu1 ran a load of the XIP word although the cut was due: it saw the state after the deadline");
++                    at_the_boundary += 1;
++                } else {
++                    assert_eq!(seen, COMPLETED, "{tag}: the deadline is after cpu1's slice: it sees the completed word, as it should");
++                }
++            }
++        }
++        assert!(at_the_boundary > 0);
++    }
++
++    /// and a core 1 that is the one to accept the cycle: its write fires an at-accept cut at once, and it is stopped at its next look.
++    #[test]
++    fn run_cpu1_does_not_run_once_the_chip_lost_power() {
++        let (code, regs) = poll_code();
++        let (_cpu, mut soc) = cut_machine(&code, &regs, false, false, Some(0), XIP_IDX);
++        let mut c1 = Cpu::new(XIP_BASE);
++        c1.core_id = 1;
++        let before = c1.insn_count;
++        assert_eq!(run_cpu1(&mut c1, &mut soc, 5000), Err(POWER_CUT.to_string()));
++        assert_eq!(c1.insn_count, before, "cpu1 ran an instruction after the cut");
++    }
++
++    /// run_dual's own sync: even if cpu0's slice returned with a due cut still unprocessed (here a stand-in for cpu0 that moves the clock and returns without any event
++    /// pass), the cut fires before cpu1 reads anything. (run_blocks processes the cut itself in every case probed, so this is the defence that stands behind it.)
++    #[test]
++    fn run_dual_fires_a_due_cut_before_core_1_even_if_cpu0_left_it_pending() {
++        for after in [10u64, 500, 1000] {
++            let (mut code, _) = poll_code();
++            let c1_at = code.len() as u32;
++            code.extend_from_slice(&LOAD);
++            code.extend_from_slice(&SPIN);
++            let (_cpu, mut soc) = cut_machine(&code, &[], false, false, Some(after), FLASH_IDX);
++            let mut c1 = Cpu::new(XIP_BASE + c1_at);
++            c1.core_id = 1;
++            c1.regs[1] = XIP_BASE + FLASH_IDX as u32 + 544;
++            let mut c1 = Some(c1);
++            // cpu0 stand-in: time passes by `k` cycles, no event pass (what a pending tick leaves behind)
++            let r = run_dual(&mut c1, &mut soc, 4 * SLICE, 1 << 20, false, |s, k| {
++                s.periph.cycles += k as u64;
++                Ok(k)
++            });
++            assert_eq!(r, Err(POWER_CUT.to_string()), "after {after}");
++            assert_eq!(c1.as_ref().unwrap().regs[2], 0, "after {after}: cpu1 ran before the due cut was fired");
++            let rec = soc.flash.chip.as_ref().unwrap().last_cut().unwrap();
++            assert_eq!(rec.cut_at, T0 + after);
++            assert!(rec.detected_at >= rec.cut_at, "noticed at the slice boundary, recorded at its own deadline");
++        }
++    }
++
++    /// A cut scheduled while the machine is already running, with the event queue empty (next_due far away), is not missed: scheduling forces a recompute.
++    #[test]
++    fn a_cut_scheduled_into_a_running_machine_is_not_missed() {
++        const AFTER: u64 = 20_000;
++        let (code, regs) = poll_code();
++        for jit in [false, true] {
++            for skip in [false, true] {
++                let (mut cpu, mut soc) = machine(&code, &regs, skip);
++                cpu.jit_on = jit;
++                soc.xip.resize(0x2000, 0xff);
++                for b in &mut soc.xip[code.len()..] {
++                    *b = 0xff;
++                }
++                soc.flash.set_chip(Some((ChipKind::Puya, Timing::Typical)));
++                let mut t = false;
++                assert_eq!(run_blocks(&mut cpu, &mut soc, 50_000, &mut t), Ok(50_000)); // runs; every timed event is far away (next_due recomputed)
++                assert!(soc.periph.next_due > soc.periph.cycles + 1_000_000 || soc.periph.next_due == u64::MAX, "the queue is empty: next_due {}", soc.periph.next_due);
++                let now = soc.periph.cycles;
++                soc.arm_flash_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AfterCycles(AFTER) }).unwrap();
++                program(&mut soc, XIP_IDX);
++                let (e, _, _, _, cycles) = run_to_the_end(&mut cpu, &mut soc, &[1 << 20]);
++                assert_eq!((e.as_str(), cycles), (POWER_CUT, now + AFTER), "jit {jit} skip {skip}");
++            }
++        }
++    }
++
++    /// Scheduling does not rely on a neighbouring write to recompute the event queue: with a chip accept made straight on the flash (no GPIO write after it), picking up the
++    /// deadline sets `next_due` to 0 and the SoC's event.
++    #[test]
++    fn picking_up_a_deadline_forces_the_event_queue_to_be_recomputed() {
++        const AFTER: u64 = 20_000;
++        let (code, regs) = poll_code();
++        let (mut cpu, mut soc) = machine(&code, &regs, false);
++        soc.flash.set_chip(Some((ChipKind::Puya, Timing::Typical)));
++        let mut t = false;
++        assert_eq!(run_blocks(&mut cpu, &mut soc, 50_000, &mut t), Ok(50_000));
++        let now = soc.periph.cycles;
++        assert!(soc.periph.next_due > now + 1_000_000, "the queue is empty: next_due {}", soc.periph.next_due);
++        soc.arm_flash_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AfterCycles(AFTER) }).unwrap();
++        soc.flash.set_clock(now, soc.periph.hz);
++        for cmd in [&[0x06u8][..], &[0x02, 0x00, 0x50, 0x00, 0x12]] {
++            soc.flash.set_cs(true);
++            for &b in cmd {
++                soc.flash.write(FSPI, 0);
++                soc.flash.write(FSPI + 8, b as u32);
++            }
++            soc.flash.set_cs(false);
++        }
++        assert_eq!(soc.flash.cut_deadline(), Some(now + AFTER), "the chip accepted and scheduled");
++        assert!(soc.periph.next_due > now + 1_000_000, "nothing has told the SoC yet");
++        soc.flash_cut_schedule();
++        assert_eq!((soc.periph.next_due, soc.periph.flash_cut_at), (0, now + AFTER));
++    }
++
++    // ---------------------------------------------------------------- terminal state, and nothing changes when it is not used
++
++    #[test]
++    fn a_power_cut_is_terminal_and_a_harness_cut_ends_the_machine_the_same_way() {
++        let (code, regs) = poll_code();
++        // scheduled: the machine stays stopped, and restoring the CHIP does not restart it (the SoC lost power: only a harness reboot can)
++        let (mut cpu, mut soc) = cut_machine(&code, &regs, false, false, Some(1000), XIP_IDX);
++        let (e, ..) = run_to_the_end(&mut cpu, &mut soc, &[1 << 20]);
++        assert_eq!(e, POWER_CUT);
++        let insns = cpu.insn_count;
++        let mut t = false;
++        for _ in 0..3 {
++            assert_eq!(run_blocks(&mut cpu, &mut soc, 100, &mut t), Err(POWER_CUT.to_string()), "it stays stopped");
++        }
++        assert_eq!(cpu.insn_count, insns);
++        soc.flash.chip.as_mut().unwrap().power_restore().unwrap();
++        assert!(soc.power_cut);
++        assert_eq!(run_blocks(&mut cpu, &mut soc, 100, &mut t), Err(POWER_CUT.to_string()));
++
++        // harness-initiated (the reference model's powerCut()): the same terminal state and the same views
++        let (mut cpu, mut soc) = machine(&code, &regs, false);
++        soc.xip.resize(0x2000, 0xff);
++        for b in &mut soc.xip[code.len()..] {
++            *b = 0xff;
++        }
++        soc.flash.set_chip(Some((ChipKind::Puya, Timing::Typical)));
++        soc.flash.chip.as_mut().unwrap().set_fault_injection(true);
++        soc.periph.cycles = T0;
++        soc.periph.next_due = 0;
++        program(&mut soc, XIP_IDX);
++        assert_eq!(soc.flash.cut_deadline(), None, "nothing scheduled: a harness cut is immediate");
++        soc.periph.cycles = T0 + 10;
++        let rec = soc.power_cut_flash().unwrap();
++        assert_eq!((rec.source, rec.cut_at, rec.detected_at), (crate::spichip::CutSource::Harness, T0 + 10, T0 + 10));
++        assert!(soc.power_cut);
++        let v = views(&mut soc, XIP_IDX);
++        assert_eq!((v.0, v.3), (PRE_IMAGE, 0xff), "the pre-image");
++        assert_eq!(run_blocks(&mut cpu, &mut soc, 100, &mut t), Err(POWER_CUT.to_string()));
++        assert_eq!(soc.power_cut_flash().err(), Some(FaultError::AlreadyOff));
++
++        // a cycle accepted with journaling off cannot be cut: refused, never faked, and the machine keeps running
++        let (_cpu, mut soc) = cut_machine(&code, &regs, false, false, None, XIP_IDX);
++        soc.periph.cycles = T0 + 10;
++        assert_eq!(soc.power_cut_flash().err(), Some(FaultError::NotEnabled));
++        assert!(!soc.power_cut);
++    }
++
++    /// Nothing changes when fault injection is not used: a chip with nothing armed, a trigger that never matches and no chip at all run the same code to the same state,
++    /// with no event scheduled.
++    #[test]
++    fn with_fault_injection_disabled_the_soc_runs_exactly_as_before() {
++        let (code, regs) = poll_code();
++        let mut results = Vec::new();
++        for (chip, armed_never) in [(false, false), (true, false), (true, true)] {
++            for (skip, jit) in [(false, false), (true, true)] {
++                let (mut cpu, mut soc) = machine(&code, &regs, skip);
++                cpu.jit_on = jit;
++                if chip {
++                    soc.flash.set_chip(Some((ChipKind::Puya, Timing::Typical)));
++                    if armed_never {
++                        soc.arm_flash_fault(FaultSpec { op: FaultOp::ChipErase, nth: 1, at: FaultAt::AtAccept }).unwrap();
++                    }
++                }
++                soc.periph.cycles = T0;
++                soc.periph.next_due = 0;
++                if chip {
++                    program(&mut soc, XIP_IDX); // a program that is not cut
++                } else {
++                    soc.flash.set_chip(None);
++                }
++                assert_eq!(soc.periph.flash_cut_at, u64::MAX, "nothing scheduled");
++                let mut t = false;
++                let mut done = 0;
++                while done < 600_000 {
++                    done += 20_011;
++                    assert!(run_blocks(&mut cpu, &mut soc, 20_011, &mut t).is_ok());
++                }
++                assert!(!soc.power_cut);
++                assert_eq!(soc.periph.flash_cut_at, u64::MAX);
++                results.push((skip, jit, cpu.pc, cpu.regs, cpu.insn_count, soc.periph.cycles - if chip { 0 } else { 0 }));
++            }
++        }
++        // every (skip, jit) group agrees across the three setups; the run did not depend on the chip or the trigger
++        for g in 0..2 {
++            let r: Vec<_> = (0..3).map(|c| &results[c * 2 + g]).collect();
++            assert!(r.iter().all(|x| (x.2, x.3, x.4, x.5) == (r[0].2, r[0].3, r[0].4, r[0].5)), "group {g}: {r:x?}");
++        }
++    }
+ }
+diff --git a/crates/fm1-soc/src/periph.rs b/crates/fm1-soc/src/periph.rs
+index 004a507..c5c64cb 100644
+--- a/crates/fm1-soc/src/periph.rs
++++ b/crates/fm1-soc/src/periph.rs
+@@ -218,6 +218,9 @@ pub struct Periph {
+     /// USB frames (usb.rs): the next, and cycles per millisecond; MAX = no cable.
+     pub(crate) usb_next: u64,
+     pub(crate) usb_period: u64,
++    /// The cycle at which the flash chip's scheduled power cut is due (Component 5, Stage 5C-2); MAX = none. An input of `next_event()`, so the
++    /// fast path, the JIT, idle skips and loop skips all stop at it exactly like at any other timed event.
++    pub(crate) flash_cut_at: u64,
+     tmr: [Tmr; 4],
+     uart: Uart,
+     /// The UART's interrupt condition (enabled and pending), kept for `any_pending`.
+@@ -359,6 +362,7 @@ impl Default for Periph {
+             spi2_next: u64::MAX,
+             usb_next: u64::MAX,
+             usb_period: 0,
++            flash_cut_at: u64::MAX,
+             tmr: [Tmr { next: u64::MAX, ..Default::default() }; 4],
+             uart: Uart { next: u64::MAX, ot_next: u64::MAX, ..Default::default() },
+             uart_irq: false,
+@@ -399,6 +403,8 @@ pub struct Due {
+     pub uart_rx: Option<(u32, u8)>,
+     /// A USB frame is due (the SoC runs the host's millisecond: usb.rs).
+     pub usb_frame: bool,
++    /// The flash chip's scheduled power-cut deadline has been reached (Component 5): the SoC fires the cut.
++    pub flash_cut: bool,
+     pub actions: Vec<Action>,
+ }
+ 
+@@ -449,7 +455,7 @@ impl Periph {
+     /// The next cycle at which something timed happens.
+     fn next_event(&self) -> u64 {
+         let mut n = self.t5_next.min(self.alnk_next).min(self.tick_next).min(self.spi2_next).min(self.adc_next).min(self.spi1_irq_at);
+-        n = n.min(self.uart.next).min(self.uart.ot_next).min(self.usb_next);
++        n = n.min(self.uart.next).min(self.uart.ot_next).min(self.usb_next).min(self.flash_cut_at);
+         for t in &self.tmr {
+             n = n.min(t.next);
+         }
+@@ -538,6 +544,9 @@ impl Periph {
+                 self.usb_next = self.cycles + self.usb_period;
+             }
+         }
++        if self.cycles >= self.flash_cut_at {
++            due.flash_cut = true; // the SoC fires it and clears the deadline
++        }
+         if self.cycles >= self.uart.ot_next {
+             self.uart.ot_next = u64::MAX;
+             if self.uart.con0 & 1 != 0 {
 diff --git a/crates/fm1-soc/src/spichip.rs b/crates/fm1-soc/src/spichip.rs
 new file mode 100644
-index 0000000..3940d8d
+index 0000000..2a927a5
 --- /dev/null
 +++ b/crates/fm1-soc/src/spichip.rs
-@@ -0,0 +1,2123 @@
+@@ -0,0 +1,2180 @@
 +//! Datasheet-based SPI NOR chip state machine (HEATWAVS Stage C1), used by `SpiFlash` when a
 +//! chip profile is selected. The default (no profile) is the original instantaneous model.
 +//!
@@ -205,6 +880,9 @@ index 0000000..3940d8d
 +    Fraction(f64),
 +    /// this many microseconds after the accept, below the shortest duration the selector can match
 +    AfterUs(u32),
++    /// this many SoC cycles after the accept, below the shortest duration the selector can match, in cycles. The exact integer form: what crosses
++    /// the engine boundary (Stage 5C-3) should be this; `Fraction` and `AfterUs` are converted by `fault_post` (see there)
++    AfterCycles(u64),
 +}
 +
 +/// One deterministic power cut: the `nth` accepted in-scope cycle matching `op`, cut at `at`. Single shot.
@@ -470,6 +1148,7 @@ index 0000000..3940d8d
 +            FaultAt::AtAccept => true,
 +            FaultAt::Fraction(f) => f.is_finite() && f >= 0.0 && f < 1.0, // 1 would be a normal completion
 +            FaultAt::AfterUs(n) => n < min_dur,                            // at or after the end of the shortest matching cycle is a normal completion
++            FaultAt::AfterCycles(n) => n < self.cycles(min_dur),
 +        };
 +        if !ok {
 +            return Err(FaultError::BadAt);
@@ -570,6 +1249,15 @@ index 0000000..3940d8d
 +        }
 +    }
 +
++    /// The cycle at which the running cycle's scheduled cut is due (its REQUESTED deadline), if one is scheduled. Cleared once the cut fires or the cycle ends.
++    pub fn cut_deadline(&self) -> Option<u64> { self.fault.journal.as_ref().and_then(|j| j.cut_at) }
++
++    /// A cut has fired and `power_restore()` has not been called.
++    pub fn powered_off(&self) -> bool { self.fault.powered_off }
++
++    /// The record of the last cut. `cut_at` is the requested deadline, `detected_at` the cycle at which the chip was settled and the cut fired (the ACTUAL firing cycle).
++    pub fn last_cut(&self) -> Option<&FaultRecord> { self.fault.last.as_ref() }
++
 +    /// The indeterminate ranges (inclusive, sorted, disjoint, merged when adjacent). Bytes of the array inside them are placeholders or synthetic test input,
 +    /// never a claim about the physical chip.
 +    pub fn indeterminate(&self) -> &[(usize, usize)] { &self.fault.indet }
@@ -632,22 +1320,29 @@ index 0000000..3940d8d
 +            }
 +        }
 +        let end = self.busy.expect("start() ran").end;
-+        let mut offset_us = None;
++        let mut picked = None;
 +        if let Some(a) = self.fault.armed.as_mut() {
 +            if !a.scheduled && a.spec.op.matches(op) {
 +                a.seen += 1;
 +                if a.seen == a.spec.nth {
 +                    a.scheduled = true;
-+                    offset_us = Some(match a.spec.at {
-+                        FaultAt::AtAccept => 0,
-+                        FaultAt::Fraction(f) => (f * us as f64).floor() as u32,
-+                        FaultAt::AfterUs(n) => n,
-+                    });
++                    picked = Some(a.spec.at);
 +                }
 +            }
 +        }
-+        // always before the end: the clamp only matters at clock rates below 1 MHz, where whole-cycle rounding could reach it
-+        let cut_at = offset_us.map(|o| (self.now + self.cycles(o)).min(end - 1));
++        // The conversion to a cycle offset (documented and tested): `AfterCycles(n)` is n cycles exactly. `AfterUs(n)` is `cycles(n)` (microseconds rounded UP to whole
++        // cycles, as every duration is). `Fraction(f)` is `floor(f * duration_us)` microseconds (the same IEEE arithmetic as the model's `Math.floor(f * dur)`),
++        // then as `AfterUs`. The deadline is `accept cycle + offset`, always clamped to the cycle before the end: the clamp only matters at clock rates below 1 MHz,
++        // where whole-cycle rounding could reach the end.
++        let cut_at = picked.map(|at| {
++            let offset = match at {
++                FaultAt::AtAccept => 0,
++                FaultAt::Fraction(f) => self.cycles((f * us as f64).floor() as u32),
++                FaultAt::AfterUs(n) => self.cycles(n),
++                FaultAt::AfterCycles(n) => n,
++            };
++            (self.now + offset).min(end - 1)
++        });
 +        self.fault.journal = Some(Journal {
 +            op,
 +            ordinal: self.fault.ordinal,
@@ -2137,6 +2832,43 @@ index 0000000..3940d8d
 +        assert_eq!((r.mem[0x1009], r.mem[0x100a]), (known9, known10), "known pre-image bytes are put back");
 +    }
 +
++    /// How a trigger becomes a cycle deadline, at a clock rate where a microsecond is NOT a whole number of cycles (33.333333 MHz): `AfterCycles(n)` is n cycles exactly;
++    /// `AfterUs(n)` is the microseconds rounded UP to whole cycles (as every duration is); `Fraction(f)` is `floor(f * duration_us)` microseconds, then as `AfterUs`.
++    /// The expectations restate the rule independently (integer ceiling) rather than call the code's helper.
++    #[test]
++    fn deadlines_convert_to_cycles_with_the_documented_rounding() {
++        let hz = 33_333_333u64;
++        let cyc = |us: u64| ((us as u128 * hz as u128 + 999_999) / 1_000_000) as u64;
++        let pp = PUYA.typical.pp as u64; // 2000 us
++        let start = 1000u64;
++        let cases: Vec<(FaultAt, u64, &str)> = vec![
++            (FaultAt::AtAccept, 0, "at accept"),
++            (FaultAt::AfterCycles(777), 777, "an exact integer cycle count"),
++            (FaultAt::AfterUs(1), cyc(1), "1 us is 33.33 cycles: rounds up to 34"),
++            (FaultAt::AfterUs(1234), cyc(1234), "a whole number of microseconds, rounded up"),
++            (FaultAt::Fraction(0.5), cyc(pp / 2), "half of 2000 us is 1000 us"),
++            (FaultAt::Fraction(1.0 / 3.0), cyc(666), "floor(666.67) us, then rounded up to cycles"),
++            (FaultAt::Fraction(0.999), cyc(1998), "floor(1998.0000000000002) us"),
++        ];
++        for (at, off, why) in cases {
++            let mut r = Rig::new(ChipKind::Puya, Timing::Typical, false);
++            r.c.set_clock(start, hz);
++            r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at }).unwrap();
++            r.accept(FaultOp::Program);
++            // (a deadline already due when the accept returns has fired in the rig's own sync: read it from the record then)
++            let got = r.c.cut_deadline().or(r.c.last_cut().map(|x| x.cut_at));
++            assert_eq!(got, Some(start + off), "{at:?}: {why}");
++        }
++        // the largest exact offset that is still a cut, and the first that is a normal completion (refused)
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, false);
++        r.c.set_clock(start, hz);
++        let end = cyc(pp);
++        assert_eq!(r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AfterCycles(end) }), Err(FaultError::BadAt), "a deadline at the end is a normal completion");
++        assert_eq!(r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AfterCycles(end - 1) }), Ok(()));
++        r.accept(FaultOp::Program);
++        assert_eq!(r.c.cut_deadline(), Some(start + end - 1));
++    }
++
 +    /// Determinism: the same flash, profile, timing, trigger and clock moves give identical records, lists and memory.
 +    #[test]
 +    fn identical_runs_give_identical_records_and_memory() {
@@ -2164,7 +2896,7 @@ index 0000000..3940d8d
 +    }
 +}
 diff --git a/crates/fm1-soc/src/spiflash.rs b/crates/fm1-soc/src/spiflash.rs
-index 9c063e6..d0e3aee 100644
+index 9c063e6..e1cd607 100644
 --- a/crates/fm1-soc/src/spiflash.rs
 +++ b/crates/fm1-soc/src/spiflash.rs
 @@ -18,6 +18,8 @@
@@ -2194,7 +2926,7 @@ index 9c063e6..d0e3aee 100644
          }
      }
  
-@@ -76,7 +82,43 @@ impl SpiFlash {
+@@ -76,7 +82,67 @@ impl SpiFlash {
  
      pub fn busy(&self) -> bool { self.cs_low }
  
@@ -2214,6 +2946,30 @@ index 9c063e6..d0e3aee 100644
 +
 +    /// Is a program/erase/write-status cycle running (the status register's WIP bit)? Always
 +    /// false without a chip profile (the original model never reports busy).
++    /// The scheduled cut deadline of the running cycle (Component 5), if any.
++    pub fn cut_deadline(&self) -> Option<u64> {
++        self.chip.as_ref().and_then(|c| c.cut_deadline())
++    }
++
++    /// A power cut has fired on the chip and power has not been restored.
++    pub fn power_cut(&self) -> bool {
++        self.chip.as_ref().is_some_and(|c| c.powered_off())
++    }
++
++    /// Settle the chip at `now` (a due cut fires before anything completes) and, after a cut, put the pre-image back into the cut range as the labelled placeholder
++    /// (`Chip::sync_cut`). The span changed is reported through `changed` and `revision` like any array change.
++    pub fn sync_cut(&mut self, now: u64, hz: u64) {
++        let Some(chip) = &mut self.chip else { return };
++        chip.set_clock(now, hz);
++        if let Some((lo, hi)) = chip.sync_cut(&mut self.mem) {
++            self.changed = Some(match self.changed {
++                Some((a, b)) => (a.min(lo), b.max(hi)),
++                None => (lo, hi),
++            });
++            self.revision = self.revision.wrapping_add(1);
++        }
++    }
++
 +    pub fn wip(&mut self, now: u64, hz: u64) -> bool {
 +        self.chip.as_mut().is_some_and(|c| {
 +            c.set_clock(now, hz);
@@ -2238,7 +2994,7 @@ index 9c063e6..d0e3aee 100644
          if !low && self.cs_low && self.trace && self.nbytes > 0 {
              eprintln!("flash cmd {:02x} addr {:06x} bytes {}", self.cmd, self.addr, self.nbytes);
          }
-@@ -108,6 +150,9 @@ impl SpiFlash {
+@@ -108,6 +174,9 @@ impl SpiFlash {
          if !self.cs_low {
              return 0xff;
          }
@@ -2250,21 +3006,21 @@ index 9c063e6..d0e3aee 100644
          if i == 0 {
 diff --git a/crates/fm1-soc/tests/chip_oracle.rs b/crates/fm1-soc/tests/chip_oracle.rs
 new file mode 100644
-index 0000000..2ddd85a
+index 0000000..a10f4e9
 --- /dev/null
 +++ b/crates/fm1-soc/tests/chip_oracle.rs
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,581 @@
 +//! Replays oracle transcripts (generated from the Stage A reference model, ci/machine/chipmodel.mjs) against
 +//! the Rust chip state machine, two ways:
 +//!   * `chip_driver`: `Chip` directly (select / transfer / release), including CS rising mid-byte;
 +//!   * `soc_driver`: through the SoC's registers (GPIO PD0 chip select, SPI0 BUF/CON) with the SoC's
 +//!     cycle counter as the clock: the path the firmware's CPU takes.
 +//! The transcript file is named by FM1_CHIP_ORACLE (see gen-transcripts.mjs for the line formats).
-+//! Scenarios marked `fault=1` (gen-transcripts.mjs --with-fault; interrupted operations, Component 5 Stage 5C-1) are replayed by the chip driver only: arming and
-+//! firing a cut needs the SoC scheduling that arrives in 5C-2, so the register driver skips them.
++//! Scenarios marked `fault=1` (gen-transcripts.mjs --with-fault; interrupted operations, Component 5) are replayed by BOTH drivers: the chip driver (Stage 5C-1) and, since
++//! Stage 5C-2, the register driver, where the cut is the SoC's own scheduled event (`Soc::sync_flash_cut`, the XIP window, the terminal `power_cut` flag).
 +
 +use fm1_core::Bus;
-+use fm1_soc::spichip::{FaultAt, FaultOp, FaultSpec};
++use fm1_soc::spichip::{FaultAt, FaultError, FaultOp, FaultSpec, FaultState};
 +use fm1_soc::{Chip, ChipKind, Soc, Timing, FLASH_SIZE};
 +
 +const SPI0: u32 = 0x11c00;
@@ -2298,13 +3054,30 @@ index 0000000..2ddd85a
 +    fn mem(&self) -> &[u8];
 +    fn wip(&mut self) -> bool;
 +    fn take_log(&mut self) -> Vec<&'static str>;
-+    /// the chip driver, for the interrupted-operation line kinds; None for a driver that cannot arm a cut
-+    fn as_chip(&mut self) -> Option<&mut ChipDrv> {
++    /// the interrupted-operation line kinds; None for a driver that cannot replay them
++    fn fault(&mut self) -> Option<&mut dyn FaultDrv> {
 +        None
 +    }
 +    /// hash of the array as the oracle knows it (bytes the chip lists as indeterminate read as 0, like the model's peekKnown)
 +    fn known_hash(&mut self) -> u32 {
 +        fnv(self.mem())
++    }
++}
++
++/// What the interrupted-operation lines need from a driver.
++trait FaultDrv {
++    /// a `fault=1` scenario starts
++    fn begin(&mut self);
++    /// `J`: journal every in-scope cycle
++    fn journaling(&mut self);
++    fn arm(&mut self, spec: FaultSpec) -> Result<(), FaultError>;
++    fn cut(&mut self) -> Result<(), FaultError>;
++    fn restore(&mut self) -> Result<(), FaultError>;
++    fn state(&mut self) -> FaultState;
++    /// The SoC fires a cut that is due at the accept inside the write that accepts it, and notices every other one at the cycle the replay moves the clock to.
++    /// The chip driver (like the model) notices at its next look.
++    fn immediate_cuts(&self) -> bool {
++        false
 +    }
 +}
 +
@@ -2322,7 +3095,7 @@ index 0000000..2ddd85a
 +            self.chip.sync_cut(&mut self.mem);
 +        }
 +    }
-+    fn as_chip(&mut self) -> Option<&mut ChipDrv> {
++    fn fault(&mut self) -> Option<&mut dyn FaultDrv> {
 +        Some(self)
 +    }
 +    fn known_hash(&mut self) -> u32 {
@@ -2364,12 +3137,82 @@ index 0000000..2ddd85a
 +    }
 +}
 +
++impl FaultDrv for ChipDrv {
++    fn begin(&mut self) {
++        self.fault = true;
++    }
++    fn journaling(&mut self) {
++        self.chip.set_fault_injection(true);
++    }
++    fn arm(&mut self, spec: FaultSpec) -> Result<(), FaultError> {
++        self.chip.arm_fault(spec)
++    }
++    fn cut(&mut self) -> Result<(), FaultError> {
++        let r = self.chip.power_cut().map(|_| ());
++        self.chip.sync_cut(&mut self.mem);
++        r
++    }
++    fn restore(&mut self) -> Result<(), FaultError> {
++        let r = self.chip.power_restore();
++        self.chip.sync_cut(&mut self.mem);
++        r
++    }
++    fn state(&mut self) -> FaultState {
++        self.chip.fault_state()
++    }
++}
++
 +struct SocDrv {
 +    soc: Soc,
++    /// a `fault=1` scenario: the clock moves through `sync_flash_cut`
++    fault: bool,
++}
++impl FaultDrv for SocDrv {
++    fn begin(&mut self) {
++        self.fault = true;
++    }
++    fn journaling(&mut self) {
++        self.soc.flash.chip.as_mut().unwrap().set_fault_injection(true);
++    }
++    fn arm(&mut self, spec: FaultSpec) -> Result<(), FaultError> {
++        self.soc.arm_flash_fault(spec)
++    }
++    fn cut(&mut self) -> Result<(), FaultError> {
++        self.soc.power_cut_flash().map(|_| ())
++    }
++    fn restore(&mut self) -> Result<(), FaultError> {
++        self.soc.flash.chip.as_mut().unwrap().power_restore()
++    }
++    fn state(&mut self) -> FaultState {
++        self.soc.sync_flash_cut();
++        let (c, hz) = (self.soc.periph.cycles, self.soc.periph.hz);
++        self.soc.flash.set_clock(c, hz);
++        self.soc.flash.chip.as_mut().unwrap().fault_state()
++    }
++    fn immediate_cuts(&self) -> bool {
++        true
++    }
 +}
 +impl Drv for SocDrv {
++    fn fault(&mut self) -> Option<&mut dyn FaultDrv> {
++        Some(self)
++    }
++    fn known_hash(&mut self) -> u32 {
++        let ranges = self.soc.flash.chip.as_ref().unwrap().indeterminate().to_vec();
++        if ranges.is_empty() {
++            return fnv(&self.soc.flash.mem);
++        }
++        let mut m = self.soc.flash.mem.clone();
++        for (lo, hi) in ranges {
++            m[lo..=hi].fill(0);
++        }
++        fnv(&m)
++    }
 +    fn set_cycles(&mut self, c: u64) {
 +        self.soc.periph.cycles = c;
++        if self.fault {
++            self.soc.sync_flash_cut();
++        }
 +    }
 +    fn tx(&mut self, tx: &[u8], read: usize, partial: u8) -> (Vec<u8>, Option<u8>) {
 +        let s = &mut self.soc;
@@ -2457,8 +3300,8 @@ index 0000000..2ddd85a
 +                let uid: Option<[u8; 16]> = f.get(7).and_then(|s| s.strip_prefix("uid=")).map(|h| unhex(h).try_into().expect("16 bytes"));
 +                let mut d = make(kind, timing, hz, wp, pat, uid);
 +                if f.iter().any(|x| *x == "fault=1") {
-+                    match d.as_chip() {
-+                        Some(c) => c.fault = true,
++                    match d.fault() {
++                        Some(c) => c.begin(),
 +                        None => {
 +                            skip = true;
 +                            continue;
@@ -2487,7 +3330,7 @@ index 0000000..2ddd85a
 +                let r: Vec<&str> = res.split(' ').collect();
 +                if r[0] == "OFF" {
 +                    rep.fault_steps += 1;
-+                    let off = d.as_chip().is_some_and(|c| c.chip.fault_state().powered_off);
++                    let off = d.fault().is_some_and(|c| c.state().powered_off);
 +                    if !off || !out.iter().all(|&b| b == 0xff) || !log.is_empty() {
 +                        nbad += 1;
 +                        bad(&mut rep, &name, ln, format!("tx {} oracle says the chip is powered off: chip powered_off {off}, answered {out:02x?}, events {log:?}", f[4]));
@@ -2563,10 +3406,10 @@ index 0000000..2ddd85a
 +                }
 +            }
 +            "J" => {
-+                drv.as_mut().unwrap().as_chip().unwrap().chip.set_fault_injection(true);
++                drv.as_mut().unwrap().fault().unwrap().journaling();
 +            }
 +            "F" => {
-+                let c = drv.as_mut().unwrap().as_chip().unwrap();
++                let c = drv.as_mut().unwrap().fault().unwrap();
 +                let op = match f[1] {
 +                    "program" => FaultOp::Program,
 +                    "erase4k" => FaultOp::Erase4k,
@@ -2584,15 +3427,14 @@ index 0000000..2ddd85a
 +                    other => panic!("bad fault trigger {other}"),
 +                };
 +                rep.fault_steps += 1;
-+                if let Err(e) = c.chip.arm_fault(FaultSpec { op, nth: f[2].parse().unwrap(), at }) {
++                if let Err(e) = c.arm(FaultSpec { op, nth: f[2].parse().unwrap(), at }) {
 +                    nbad += 1;
 +                    bad(&mut rep, &name, ln, format!("arm_fault refused a trigger the oracle accepted: {}", e.id()));
 +                }
 +            }
 +            "C" | "R" => {
-+                let c = drv.as_mut().unwrap().as_chip().unwrap();
-+                let got = if f[0] == "C" { c.chip.power_cut().map(|_| ()) } else { c.chip.power_restore() };
-+                c.chip.sync_cut(&mut c.mem);
++                let c = drv.as_mut().unwrap().fault().unwrap();
++                let got = if f[0] == "C" { c.cut() } else { c.restore() };
 +                let got = match got {
 +                    Ok(()) => "OK".to_string(),
 +                    Err(e) => format!("ERR {}", e.id()),
@@ -2604,8 +3446,8 @@ index 0000000..2ddd85a
 +                }
 +            }
 +            "Q" | "K" => {
-+                let c = drv.as_mut().unwrap().as_chip().unwrap();
-+                let st = c.chip.fault_state();
++                let c = drv.as_mut().unwrap().fault().unwrap();
++                let st = c.state();
 +                let rt = |rs: &[(usize, usize)]| if rs.is_empty() { "-".to_string() } else { rs.iter().map(|(l, h)| format!("{l}-{h}")).collect::<Vec<_>>().join(",") };
 +                let got = if f[0] == "Q" {
 +                    format!("{} {} {} {} {} {} {}", st.powered_off as u8, st.accepted, st.completed, st.interrupted, st.fired, st.indeterminate_reads, rt(&st.indeterminate))
@@ -2632,9 +3474,16 @@ index 0000000..2ddd85a
 +                    }
 +                };
 +                rep.fault_steps += 1;
-+                if got != line[2..] {
++                let mut want = line[2..].to_string();
++                if f[0] == "K" && c.immediate_cuts() && f[5] == f[6] {
++                    // fields: op source ordinal nth startedAt cutAt endWouldBeAt detectedAt ...; a cut due at the accept is detected at the accept
++                    let mut parts: Vec<&str> = want.split(' ').collect();
++                    parts[7] = f[6];
++                    want = parts.join(" ");
++                }
++                if got != want {
 +                    nbad += 1;
-+                    bad(&mut rep, &name, ln, format!("{}: chip `{got}`, oracle `{}`", f[0], &line[2..]));
++                    bad(&mut rep, &name, ln, format!("{}: chip `{got}`, oracle `{want}`", f[0]));
 +                }
 +            }
 +            other => panic!("unknown transcript line kind {other}"),
@@ -2681,7 +3530,7 @@ index 0000000..2ddd85a
 +            if pat {
 +                soc.flash.mem.copy_from_slice(&pattern());
 +            }
-+            Box::new(SocDrv { soc })
++            Box::new(SocDrv { soc, fault: false })
 +        },
 +        "SoC driver",
 +    );
@@ -2730,7 +3579,7 @@ index 0000000..2ddd85a
 +        let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
 +        soc.periph.hz = 100_000_000;
 +        soc.flash.set_chip(Some((kind, Timing::Typical)));
-+        let mut drv = SocDrv { soc };
++        let mut drv = SocDrv { soc, fault: false };
 +        assert_eq!(drv.tx(&[0x9f], 3, 0).0, id);
 +        drv.tx(&[0x06], 0, 0);
 +        drv.tx(&[0x20, 0, 0, 0], 0, 0);
@@ -2743,10 +3592,46 @@ index 0000000..2ddd85a
 +    }
 +}
 diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
-index fa2ab51..007fb8a 100644
+index fa2ab51..60ed087 100644
 --- a/crates/fm1-web/src/lib.rs
 +++ b/crates/fm1-web/src/lib.rs
-@@ -263,6 +263,120 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
+@@ -33,6 +33,8 @@ struct Machine {
+     /// interleaved L/R i16 not yet handed out
+     audio: VecDeque<i16>,
+     halted: bool,
++    /// TERMINAL (Component 5): the flash chip lost power in a cut. Not `halted`: a CPU fault and a power cut are different things.
++    power_cut: bool,
+     flash0: Vec<u8>,
+     usr: Option<usize>,
+     started: bool,
+@@ -129,7 +131,7 @@ impl Machine {
+             cpu.regs[0] = fm1_soc::stock_boot(&mut soc, f, params, board);
+         }
+         let flash0 = soc.flash.mem.clone();
+-        Machine { cpu, cpu1: None, soc, pending_tick: false, audio: VecDeque::new(), halted: false,
++        Machine { cpu, cpu1: None, soc, pending_tick: false, audio: VecDeque::new(), halted: false, power_cut: false,
+             flash0, usr: None, started: false, pace: Pace::default() }
+     }
+ 
+@@ -180,9 +182,15 @@ impl Machine {
+     fn run(&mut self, n: u32) {
+         let jit = self.cpu.jit_on;
+         if let Some(c1) = self.cpu1.as_mut() { c1.profile = self.cpu.profile; }
++        if self.power_cut {
++            return; // the chip lost power: nothing runs again (terminal)
++        }
+         let Machine { cpu, cpu1, soc, pending_tick, .. } = self;
+-        if machine::run_dual(cpu1, soc, n, RAM_SIZE, jit, |soc, k| machine::run_blocks(cpu, soc, k, pending_tick)).is_err() {
+-            self.halted = true;
++        match machine::run_dual(cpu1, soc, n, RAM_SIZE, jit, |soc, k| machine::run_blocks(cpu, soc, k, pending_tick)) {
++            Ok(()) => {}
++            // a power cut is a state of its own, never a CPU fault (Component 5)
++            Err(_) if self.soc.power_cut => self.power_cut = true,
++            Err(_) => self.halted = true,
+         }
+     }
+ }
+@@ -263,6 +271,120 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
  pub extern "C" fn fm1_flash_revision() -> u32 { machine().map_or(0, |m| m.soc.flash.revision) }
  #[no_mangle]
  pub extern "C" fn fm1_flash_busy() -> u32 { machine().is_some_and(|m| m.soc.flash.busy()) as u32 }
@@ -2867,3 +3752,56 @@ index fa2ab51..007fb8a 100644
  #[no_mangle]
  pub extern "C" fn fm1_flash_restore(ptr: *mut u8, len: u32) -> u32 {
      let bytes = unsafe { Vec::from_raw_parts(ptr, len as usize, len as usize) };
+@@ -346,7 +468,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
+     m.pace.begin(frames, m.soc.periph.hz);
+     // a cap below what the pace needs would drop out where running for the frames alone did not
+     let max_insns = max_insns.max(m.pace.least(frames, m.soc.periph.hz, ahead).min(u32::MAX as u64) as u32);
+-    while spent < max_insns && !m.halted && m.pace.more(m.audio.len() / 2, frames, ahead) {
++    while spent < max_insns && !m.halted && !m.power_cut && m.pace.more(m.audio.len() / 2, frames, ahead) {
+         let (c0, h0) = (m.soc.periph.cycles, m.soc.periph.audio_halves);
+         m.run(20_000);
+         spent += 20_000;
+@@ -880,3 +1002,43 @@ mod pace_tests {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod power_cut_tests {
++    use super::*;
++    use fm1_soc::spichip::{FaultAt, FaultOp, FaultSpec};
++
++    fn spi(m: &mut Machine, bytes: &[u8]) {
++        m.soc.write32(0x500c0, 0);
++        for &b in bytes {
++            m.soc.write32(0x11c00, 0);
++            m.soc.write32(0x11c08, b as u32);
++        }
++        m.soc.write32(0x500c0, 1);
++    }
++
++    /// Component 5, Stage 5C-2: a flash power cut stops the machine in a state of its own. It is not `halted` (a CPU fault), nothing runs afterwards, and the render loop's
++    /// condition sees it; a real CPU fault is still a halt.
++    #[test]
++    fn a_power_cut_is_its_own_state_not_a_cpu_halt() {
++        let mut image = vec![0u8; 0x4000];
++        image[..6].copy_from_slice(&[0x60, 0xff, 0x00, 0x20, 0xfd, 0xff]); // spin on the spot
++        let mut m = Machine::new(image, fm1_soc::XIP_BASE, 100, None);
++        m.soc.flash.set_chip(Some((fm1_soc::ChipKind::Puya, fm1_soc::Timing::Typical)));
++        m.soc.arm_flash_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AfterCycles(50_000) }).unwrap();
++        spi(&mut m, &[0x06]);
++        spi(&mut m, &[0x02, 0x00, 0x50, 0x00, 0x12, 0x34]);
++        m.run(200_000);
++        assert!(m.power_cut && !m.halted, "power_cut {} halted {}", m.power_cut, m.halted);
++        assert_eq!(m.soc.periph.cycles, 50_000, "stopped at the deadline");
++        let insns = m.cpu.insn_count;
++        m.run(10_000);
++        assert_eq!(m.cpu.insn_count, insns, "nothing runs after a power cut");
++        assert!(m.power_cut && !m.halted);
++
++        // a CPU fault is still a halt, and not a power cut
++        let mut f = Machine::new(vec![0xff; 0x4000], fm1_soc::XIP_BASE, 100, None);
++        f.run(1000);
++        assert!(f.halted && !f.power_cut, "halted {} power_cut {}", f.halted, f.power_cut);
++    }
++}
