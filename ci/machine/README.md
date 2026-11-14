@@ -88,7 +88,8 @@ which is chip-select), `machine.flashEvents()` counts commands the model ignored
 if completed), `machine.indeterminateRanges()` the bytes physically unknown, `machine.peekKnown(addr, len)` the flash with those marked unknown (`flash()` shows the raw array: a labelled placeholder there).
 **The engine never decides what an interrupted range holds.** `machine.powerCycle({ outcome: { kind: "ff" } })` reboots with an **explicit, named synthetic outcome** (faultpolicy.mjs: `old`, `new`, `ff`, `zero`, `random`/`bit-mix` with a
 seed, `prefix`); there is no default, the list of unknown bytes is carried unchanged, and the outcome is kept as `machine.faultOutcome`, labelled synthetic. `runFaultScenario(engine, pkg, config)`
-(faultscenario.mjs) runs a scenario to a deterministic JSON report (`reportSha256`). Details and limits: docs/dev/FAULT-INJECTION.md sections 12 and 13.
+(faultscenario.mjs) runs a scenario to a deterministic JSON report (`reportSha256`), optionally with the firmware survey's input script (`inputs`) or with a harness-issued program/erase (`inject`).
+`node ci/machine/faultsurvey.mjs all` runs the fixed survey matrix over the 17 firmware and both chip profiles (about an hour; results and findings: docs/dev/FAULT-SURVEY.md). Details and limits: docs/dev/FAULT-INJECTION.md sections 12 to 14.
 
 ## Flash-chip reference model (datasheet oracle)
 
@@ -110,6 +111,7 @@ Research, sources and the list of ambiguities: `docs/dev/FLASH-CHIPS.md`.
 | `monitor.mjs` | `watch()`: runs and judges: `booted` / `crashed` / `blank` / `display-lost` |
 | `cli.mjs` | Command line; JSON output with `--json` |
 | `selftest.mjs` | Checks the harness itself against bundled firmware (and runs the chip-model tests) |
+| `faultsurvey.mjs` | the fault survey: plan, sharded runner, replay check, summary (Stage 5E) |
 | `fault.mjs`, `faultscenario.mjs`, `faultpolicy.mjs` | fault-injection harness layer, scenario runner and the explicit synthetic outcome policies (Component 5) |
 | `chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs` | Flash-chip reference model and its 129 conformance tests |
 
@@ -148,8 +150,8 @@ code sector halts the CPU (see `selftest.mjs`).
 | Command | What runs | Time |
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
-| `npm run test:machine:quick` | quick tier alone (165 tests: 36 harness incl. one real Felucca boot + 129 chip-model) | ~12 s |
-| `npm run test:machine` | full tier: every test (263 = 134 harness + 129 chip-model), including the slower firmware-behaviour checks. 85 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests + 11 fault-injection live tests + 14 fault harness live tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 172 run | ~90 s (~240 s with the chip engine) |
+| `npm run test:machine:quick` | quick tier alone (172 tests: 43 harness incl. one real Felucca boot + 129 chip-model) | ~12 s |
+| `npm run test:machine` | full tier: every test (274 = 144 harness + 129 chip-model), including the slower firmware-behaviour checks. 89 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests + 11 fault-injection live tests + 14 fault harness live tests + 4 fault survey live tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 172 run | ~90 s (~240 s with the chip engine) |
 | `node ci/machine/selftest.mjs --filter "chip live"` | only the live chip conformance tests (needs the chip engine) | ~9 s |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the

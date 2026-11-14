@@ -15,13 +15,16 @@ export const VERDICTS = ["booted", "crashed", "power-cut", "blank", "display-los
 
 /**
  * Run `machine` for `seconds` of emulated time, sampling every `sampleMs`, and judge it.
- * Options: seconds (default 3), sampleMs (100), minColours (2).
+ * Options: seconds (default 3), sampleMs (100), minColours (2), inputs ([[audio ms, fn(machine)], ...]: applied at the first sample boundary at or after their time, as the firmware
+ * survey does; none by default, so a plain watch() is unchanged).
  */
-export function watch(machine, { seconds = 3, sampleMs = 100, minColours = 2 } = {}) {
+export function watch(machine, { seconds = 3, sampleMs = 100, minColours = 2, inputs = [] } = {}) {
   const start = machine.observe();          // before the first instruction: the baseline for activity
   const samples = [];
   const steps = Math.ceil((seconds * 1000) / sampleMs);
+  const pending = [...inputs];
   for (let i = 0; i < steps; i++) {
+    while (pending.length && i * sampleMs >= pending[0][0]) pending.shift()[1](machine);
     machine.run(sampleMs);
     samples.push(machine.observe());
     if (machine.halted || machine.powerCut) break;       // a CPU halt and a power cut each end the run (and stay distinct)

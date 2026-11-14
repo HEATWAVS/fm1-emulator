@@ -64,7 +64,7 @@ export function registerFaultHarnessQuickTests(testQuick) {
 
   T("a scenario is normalised with every default visible, and refuses what it cannot run before anything boots", () => {
     const n = normalizeScenario({ fault: { op: "any", at: { afterCycles: 5000 } }, policy: { kind: "random", seed: 3 }, rebootMs: 500 });
-    assert.deepEqual(n, { chip: "puya", timing: "typical", fault: { op: "any", nth: 1, at: { afterCycles: 5000 } }, maxMs: 3000, policy: { kind: "random", seed: 3 }, rebootMs: 500, mhz: 100, jit: false, flashUid: null });
+    assert.deepEqual(n, { chip: "puya", timing: "typical", fault: { op: "any", nth: 1, at: { afterCycles: 5000 } }, maxMs: 3000, policy: { kind: "random", seed: 3 }, rebootMs: 500, mhz: 100, jit: false, flashUid: null, inputs: false, inject: null });
     assert.throws(() => normalizeScenario({ chip: "legacy" }), CODE("needs-chip"));
     assert.throws(() => normalizeScenario({ rebootMs: 100 }), CODE("outcome-required"), "a reboot needs an explicit policy: there is no default fill");
     assert.throws(() => normalizeScenario({ rebootMs: 100, policy: { kind: "random" } }), /seed/, "and a seeded fill needs its seed");

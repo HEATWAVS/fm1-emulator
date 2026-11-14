@@ -33,6 +33,7 @@ import { registerLiveChipTests } from "./chiplivetests.mjs";
 import { registerFirmwareTests } from "./firmwaretests.mjs";
 import { registerFaultLiveTests } from "./faultlivetests.mjs";
 import { registerFaultHarnessQuickTests, registerFaultHarnessLiveTests } from "./faultharnesstests.mjs";
+import { registerFaultSurveyQuickTests, registerFaultSurveyLiveTests } from "./faultsurveytests.mjs";
 import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions, parseFlashUid, uidWords } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
@@ -614,9 +615,11 @@ test.chip("flash chip (live): a power cycle keeps the profile; options are still
 
 registerLiveChipTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // live chip conformance (Stage C3), full tier, needs the chip engine
 registerFirmwareTests(test.chip, { chipEngine, catalogPkg });
+registerFaultSurveyQuickTests(test.quick);   // the fault survey tool and its committed results (Component 5, Stage 5E)
 registerFaultHarnessQuickTests(test.quick);   // the fault-injection harness API, pure logic over a stand-in engine (Component 5, Stage 5D)
 registerFaultLiveTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // fault-injection exports and clock syncs (Component 5, Stage 5C-3), full tier, needs the chip engine
-registerFaultHarnessLiveTests(test.chip, { chipEngine, shipped: engine, pkg: FELUCCA, quadro: QUADRO });   // the harness API over real firmware (Stage 5D), full tier, needs the chip engine   // firmware behaviour under the profiles (Stage C4), full tier, needs the chip engine
+registerFaultHarnessLiveTests(test.chip, { chipEngine, shipped: engine, pkg: FELUCCA, quadro: QUADRO });
+registerFaultSurveyLiveTests(test.chip, { chipEngine, shipped: engine, pkg: FELUCCA, quadro: QUADRO });   // the harness API over real firmware (Stage 5D), full tier, needs the chip engine   // firmware behaviour under the profiles (Stage C4), full tier, needs the chip engine
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance, incl. fault injection), quick tier
 registerFaultRegressionTests(test, { genPath: resolve(import.meta.dirname, "../engine/gen-transcripts.mjs") });   // full tier: transcripts unchanged with faults disabled
 

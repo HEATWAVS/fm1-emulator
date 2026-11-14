@@ -279,14 +279,16 @@ export class Fm1Machine {
    * Run until the armed (or harness) power cut, a CPU halt, or `maxMs` of audio time. Returns { outcome: "power-cut" | "halted" | "not-triggered", ranMs, record }: `ranMs` is the audio
    * time run by this call, `record` the audit record (null unless a cut fired). It never throws for "no cut": the caller decides whether that is a failure.
    */
-  runUntilCut(maxMs, { stepMs = 50 } = {}) {
+  runUntilCut(maxMs, { stepMs = 50, inputs = [] } = {}) {
     this.#fault();
     if (!(maxMs > 0) || !(stepMs > 0)) throw new RangeError("maxMs and stepMs must be positive");
     const start = this.frames;
     let outcome = "not-triggered";
+    const pending = inputs.filter(([t]) => t >= (this.frames * 1000) / SAMPLE_RATE);       // [[audio ms since boot, fn(machine)], ...] applied at the first step boundary at or after their time
     while (((this.frames - start) * 1000) / SAMPLE_RATE < maxMs) {
       if (this.powerCut) { outcome = "power-cut"; break; }
       if (this.halted) { outcome = "halted"; break; }
+      while (pending.length && pending[0][0] <= (this.frames * 1000) / SAMPLE_RATE) pending.shift()[1](this);
       this.run(stepMs);
     }
     if (outcome === "not-triggered") outcome = this.powerCut ? "power-cut" : this.halted ? "halted" : "not-triggered";

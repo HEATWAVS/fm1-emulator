@@ -22,13 +22,13 @@ export const CONFIGS = [["legacy", {}], ["puya", { flashChip: "puya" }], ["uc25h
   ["puya-max", { flashChip: "puya", flashTiming: "maximum" }], ["uc25hq80-max", { flashChip: "uc25hq80", flashTiming: "maximum" }]];
 const QUANTUM_MS = 128 / 44.1;            // one fm1_render call of audio time
 
-const INPUTS = [   // the same script for every run (audio-clock ms), as in the Stage B/C2 comparisons
+export const INPUTS = [   // the same script for every run (audio-clock ms), as in the Stage B/C2 comparisons
   [2000, (m) => m.key(5, true)], [2400, (m) => m.key(5, false)], [3000, (m) => m.midi([0x90, 60, 100])], [3500, (m) => m.midi([0x80, 60, 0])],
   [4000, (m) => m.encoder(1, 1)], [4500, (m) => m.encoder(1, -1)], [5000, (m) => m.pot(500)], [6000, (m) => m.key(10, true)], [6300, (m) => m.key(10, false)],
   [6500, (m) => m.midi([0xb0, 1, 64])],
 ];
 
-function catalogPackage(id) {
+export function catalogPackage(id) {
   const entry = JSON.parse(readFileSync(resolve(EMULATOR_DIR, "firmwares.json"), "utf8")).firmwares.find((f) => f.id === id && f.package);
   if (!entry) throw new Error(`no bundled firmware ${id}`);
   return new Uint8Array(readFileSync(resolve(EMULATOR_DIR, entry.package)));
