@@ -164,6 +164,13 @@ program; poll `05` bit 0 (WIP) with a timeout (erase 500 ms, program 10 ms) and 
 ID is never written (matches `quadro-fm1` stopping writes on `B3 60 14`). So WEL checking and WIP/timing are the firmware-visible
 behaviours that matter most.
 
+## Interrupted operations (Component 5 research)
+
+Summary only; the full evidence table, citations and design are in `FAULT-INJECTION.md`. **Neither datasheet states what the array holds after power is lost, or a reset is issued, during a
+program, erase or chip erase (unspecified).** Verified: the state machine is reset to standby at power-up (Puya p.15, UC p.10), WEL and SUS bits clear at power-up (UC p.15, p.10; Puya p.22, p.25),
+non-volatile status bits are retained, and a reset during program/erase means "the operation will be disabled, the data under processing could be damaged or lost" (Puya p.53, UC p.43).
+Suspend/resume exist (Puya p.51-53, UC p.40-42) but are not modelled; a deep-power-down command during a cycle is rejected (UC p.34).
+
 ## Using the model
 
 ```js

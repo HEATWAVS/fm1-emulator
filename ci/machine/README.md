@@ -100,7 +100,7 @@ Research, sources and the list of ambiguities: `docs/dev/FLASH-CHIPS.md`.
 | `monitor.mjs` | `watch()`: runs and judges: `booted` / `crashed` / `blank` / `display-lost` |
 | `cli.mjs` | Command line; JSON output with `--json` |
 | `selftest.mjs` | Checks the harness itself against bundled firmware (and runs the chip-model tests) |
-| `chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs` | Flash-chip reference model and its 87 conformance tests |
+| `chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs` | Flash-chip reference model and its 129 conformance tests |
 
 Flash files (`--flash`, `--save-flash`) use the same record format the app saves: per 4 KiB sector,
 a 4-byte little-endian offset then the 4096 bytes. A test can therefore run a firmware, save what it
@@ -137,8 +137,8 @@ code sector halts the CPU (see `selftest.mjs`).
 | Command | What runs | Time |
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
-| `npm run test:machine:quick` | quick tier alone (117 tests: 30 harness incl. one real Felucca boot + 87 chip-model) | ~6 s |
-| `npm run test:machine` | full tier: every test (189 = 102 harness + 87 chip-model), including the slower firmware-behaviour checks. 60 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 129 run | ~90 s (~240 s with the chip engine) |
+| `npm run test:machine:quick` | quick tier alone (159 tests: 30 harness incl. one real Felucca boot + 129 chip-model) | ~12 s |
+| `npm run test:machine` | full tier: every test (232 = 103 harness + 129 chip-model), including the slower firmware-behaviour checks. 60 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 172 run | ~90 s (~240 s with the chip engine) |
 | `node ci/machine/selftest.mjs --filter "chip live"` | only the live chip conformance tests (needs the chip engine) | ~9 s |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the

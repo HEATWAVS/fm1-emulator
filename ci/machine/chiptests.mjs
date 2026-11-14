@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url";
 import { ChipModel, ManualClock, UnspecifiedBehavior, NotModeled } from "./chipmodel.mjs";
 import { PROFILES, BEHAVIORS, DOCS, protectionRows } from "./chipspec.mjs";
 import { FLASH_IDS } from "./flashid.mjs";
+import { registerFaultTests } from "./faulttests.mjs";
 
 const NAMES = ["puya", "uc25hq80"];
 const BYTES = 1 << 20;
@@ -562,6 +563,9 @@ export function registerChipTests(test) {
     assert.deepEqual(PROFILES.puya.jedec, FLASH_IDS.puya.bytes);
     assert.deepEqual(PROFILES.uc25hq80.jedec, FLASH_IDS.uc25hq80.bytes);
   });
+
+  // ---------------------------------------------------------------- interrupted operations: fault injection in the reference model (Stage 5B)
+  registerFaultTests({ test, T, both, mk, TIMING });
 
   // ---------------------------------------------------------------- traceability (registered last)
   test("chip model: every modelled behaviour has page-level datasheet citations and at least one test, per profile", () => {

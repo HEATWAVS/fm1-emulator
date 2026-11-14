@@ -217,6 +217,40 @@ add("ruid.busy", "4Bh while a program/erase/write-status cycle is in progress",
   X([P(18, "8 Device Operation: the commands accepted during a cycle are not listed for RUID")], "not stated"),
   X([U(44, "9.39 RDSFDP: 'rejected without having any effects on the cycle'; 9.38 RUID says nothing")], "UC states it for RDSFDP only"));
 
+// --- interrupted operations (Component 5, Stage 5B). READ docs/dev/FAULT-INJECTION.md section 2: every page of both datasheets was searched; NEITHER states the array contents
+// after power is lost (or a reset is issued) during a program/erase. The entries below separate what is stated (V), what is read from it (I), what is not stated (X) and what is out of
+// scope (N). The model records interruption, range and indeterminate state ONLY; synthetic fills live in faultpolicy.mjs and are never datasheet claims.
+add("fault.powerup-standby", "at power-up the state machine is reset to standby: an interrupted cycle is never resumed",
+  V([P(15, "6 Data Protection: 'The state machine will be reset as standby mode automatically during power up'")], "that no cycle resumes is the reading of 'reset to standby'"),
+  V([U(10, "8 Data Protection: 'The state machine will be reset to standby mode automatically during power up'")], "that no cycle resumes is the reading of 'reset to standby'"));
+add("fault.status-after-restore", "after power returns WIP is 0 (no cycle is running); the datasheets print no WIP value for power-up",
+  I([P(15, "6 Data Protection: state machine reset to standby at power-up")], "WIP is read as 0 because a cycle in standby is not running; not stated outright"),
+  I([U(10, "8 Data Protection: state machine reset to standby at power-up")], "WIP is read as 0 because a cycle in standby is not running; not stated outright"));
+add("fault.wel-sus-cleared", "WEL and the suspend bits are 0 after power returns",
+  V([P(22, "10.3 WRDI: WEL reset by Power-up"), P(25, "10.5 SUS1 and SUS2 bits: cleared by a power-down, power-up cycle")]),
+  V([U(15, "9.2 WRDI: 'the WEL bit is automatically reset after Power-up'"), U(10, "7 SUS1 and SUS2 bits: cleared by a power-down, power-up cycle")]));
+add("fault.nv-retained", "the non-volatile status bits (BP4-BP0, SRP1:SRP0, QE, LB3-LB1, CMP) keep their values across a power cut",
+  V([P(24, "10.5 BP, SRP, QE and LB bits: non-volatile"), P(25, "10.5 CMP bit: non-volatile")], "a cut during a write-status cycle itself is not modelled (fault.out-of-scope)"),
+  V([U(9, "7 BP, SRP, QE and LB bits: non-volatile"), U(10, "7 CMP bit: non-volatile")], "a cut during a write-status cycle itself is not modelled (fault.out-of-scope)"));
+add("fault.cut-contents", "the contents of the bytes of a program/erase/chip erase interrupted by power loss",
+  X([P(15, "6 Data Protection: concerns inadvertent writes at power transitions, not a cut valid cycle"), P(53, "10.40 Software Reset: only the reset case says 'could be damaged or lost'")], "no page states the array after an interrupted cycle: the model marks the range indeterminate and never states a value"),
+  X([U(10, "8 Data Protection: concerns inadvertent writes at power transitions, not a cut valid cycle"), U(43, "9.37 Reset: only the reset case says 'could be damaged or lost'")], "no page states the array after an interrupted cycle: the model marks the range indeterminate and never states a value"));
+add("fault.range", "the bytes at risk are the cycle's own: the latched bytes of a page program, the whole unit of a sector/block erase, the whole array of a chip erase",
+  I([P(53, "10.40 Software Reset: 'the data under processing'"), P(39, "10.24 PP: the programmed bytes"), P(36, "10.20 SE: the unit erased")], "'data under processing' is read as the command's own range; not stated for power loss"),
+  I([U(43, "9.37 Reset: 'the data under processing'"), U(28, "9.21 PP: the programmed bytes"), U(26, "9.17 SE: the unit erased")], "'data under processing' is read as the command's own range; not stated for power loss"));
+add("fault.neighbours", "no byte outside the interrupted cycle's own range is affected",
+  I([P(15, "6 Data Protection"), P(53, "10.40 Software Reset")], "an ASSUMPTION, not a statement: the datasheets are silent about collateral effects; the model assumes none and the tests only prove the implementation honours that assumption"),
+  I([U(10, "8 Data Protection"), U(43, "9.37 Reset")], "an ASSUMPTION, not a statement: the datasheets are silent about collateral effects; the model assumes none and the tests only prove the implementation honours that assumption"));
+add("fault.erase-clears", "a later complete erase over an indeterminate byte leaves it 0xFF and known",
+  I([P(36, "10.20 SE"), P(37, "10.21 BE32K, 10.22 BE"), P(38, "10.23 CE")], "an erase sets every bit of its unit to 1 (Stage A erase.*); applied to indeterminate bytes it is read as defining them"),
+  I([U(26, "9.17 SE, 9.18 HBE"), U(27, "9.19 BE"), U(28, "9.20 CE")], "an erase sets every bit of its unit to 1 (Stage A erase.*); applied to indeterminate bytes it is read as defining them"));
+add("fault.program-over-indeterminate", "a page program over an indeterminate byte",
+  X([P(39, "10.24 PP: programming clears bits of a byte whose current value is not known here")], "the result depends on the unknown prior contents: the byte stays indeterminate"),
+  X([U(28, "9.21 PP: programming clears bits of a byte whose current value is not known here")], "the result depends on the unknown prior contents: the byte stays indeterminate"));
+add("fault.out-of-scope", "interruption of a write-status cycle or a page erase (81h), suspend/resume, reset during an operation, and brown-out",
+  N([P(26, "10.8 WRSR"), P(36, "10.19 PE"), P(51, "10.36 Suspend/Resume"), P(53, "10.40 Reset: 'could be damaged or lost'"), P(14, "5.5 power-down timing")], "a trigger never matches these cycles and powerCut() on them is refused, never silently completed; each needs its own proposal"),
+  N([U(17, "9.6 WRSR"), U(25, "9.16 PE"), U(40, "9.33 Suspend/Resume"), U(43, "9.37 Reset: 'could be damaged or lost'"), U(50, "10.1 power-on timing")], "a trigger never matches these cycles and powerCut() on them is refused, never silently completed; each needs its own proposal"));
+
 // --- status register
 add("sr.layout", "16-bit status register; 05h returns S7-S0, 35h returns S15-S8",
   V([P(23, "10.5 RDSR, Status Register table")]), V([U(8, "7 Status Register, Table-4"), U(16, "9.4 RDSR")]));

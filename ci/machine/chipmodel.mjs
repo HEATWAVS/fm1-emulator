@@ -24,6 +24,14 @@ export class UnspecifiedBehavior extends Error {
 export class NotModeled extends Error {
   constructor(id, message) { super(`${message} [not modelled: ${id}]`); this.name = "NotModeled"; this.id = id; }
 }
+/** Misuse of the fault-injection interface (bad trigger, nothing to cut, wrong power state). Not a datasheet matter. */
+export class FaultError extends Error {
+  constructor(id, message) { super(`${message} [fault: ${id}]`); this.name = "FaultError"; this.id = id; }
+}
+/** The chip has lost power (a power cut fired) and has not been restored: it answers nothing. */
+export class PoweredOff extends Error {
+  constructor(message = "the chip lost power mid-cycle and has not been restored (powerRestore())") { super(message); this.name = "PoweredOff"; }
+}
 
 /** A deterministic clock the caller moves by hand (microseconds). Any object with now() works. */
 export class ManualClock {
@@ -53,8 +61,17 @@ const NOT_MODELED = new Map([
 ]);
 const ERASE = { 0x81: ["pe", GEOMETRY.page], 0x20: ["se", GEOMETRY.sector], 0x52: ["be32", GEOMETRY.block32], 0xd8: ["be64", GEOMETRY.block64] };
 
+// ---- fault injection (Component 5, Stage 5B): which cycles a trigger may match. Page erase (81h), WRSR, suspend/resume, reset and brown-out are out of scope.
+export const FAULT_OPS = ["program", "erase4k", "erase32k", "erase64k", "erase", "chip-erase", "any"];
+const FAULT_KEYS = { program: ["pp"], erase4k: ["se"], erase32k: ["be32"], erase64k: ["be64"], erase: ["se", "be32", "be64"], "chip-erase": ["ce"], any: ["pp", "se", "be32", "be64", "ce"] };
+const OUT_OF_SCOPE_OPS = new Set(["wrsr", "erase-page", "page-erase", "81h", "suspend", "resume", "reset", "brown-out"]);
+const matchesOp = (selector, op) => selector === op || selector === "any" || (selector === "erase" && (op === "erase4k" || op === "erase32k" || op === "erase64k"));
+
 export class ChipModel {
   #p; #clock; #timing; #wp; #uid; #array; #sr; #unknown = 0; #busy = null; #last = -Infinity;
+  // fault injection state; entirely idle (and invisible) unless armFault()/powerCut() is used
+  #fault = null; #poweredOff = false; #indet = []; #lastFault = null; #faultCount = 0; #indetReads = 0;
+  #stats = { accepted: 0, completed: 0, interrupted: 0 }; #ordinal = 0;
 
   /**
    * profile  "puya" | "uc25hq80" (or a profile object)
@@ -99,6 +116,7 @@ export class ChipModel {
     if (!Number.isInteger(read) || read < 0) throw new RangeError("read must be a non-negative integer");
     if (!Number.isInteger(partialBits) || partialBits < 0 || partialBits > 7) throw new RangeError("partialBits must be 0..7");
     this.#settle();
+    if (this.#poweredOff) throw new PoweredOff();
     const op = tx[0];
     if (!MODELED.has(op)) this.#notModeled(op);
     if (this.#busy) return this.#duringCycle(op, tx, read);
@@ -125,14 +143,100 @@ export class ChipModel {
   /** Inspect the array (a test aid, not a chip command). Refused while a cycle runs: its contents are unspecified then. */
   peek(addr, len = 1) {
     this.#settle();
+    if (this.#poweredOff) throw new PoweredOff();
     if (this.#busy) throw new UnspecifiedBehavior("array.during-cycle", "the array contents during a program/erase cycle");
     if (!Number.isInteger(addr) || addr < 0 || len < 0 || addr + len > BYTES) throw new RangeError("peek range outside the 1 MiB array");
+    if (len > 0 && this.#overlapsIndet(addr, addr + len - 1)) throw new UnspecifiedBehavior("fault.cut-contents", "bytes of an interrupted program/erase: their contents are indeterminate (use peekKnown for the known/unknown split)");
     return this.#array.slice(addr, addr + len);
+  }
+
+  /**
+   * Like peek, but never refuses for indeterminate bytes: returns { bytes, unknown } where unknown[i] is 1 for a byte whose contents are indeterminate
+   * (its bytes[i] is a 0 placeholder, NOT a claim). Known bytes are the array's actual contents.
+   */
+  peekKnown(addr, len = 1) {
+    this.#settle();
+    if (this.#poweredOff) throw new PoweredOff();
+    if (this.#busy) throw new UnspecifiedBehavior("array.during-cycle", "the array contents during a program/erase cycle");
+    if (!Number.isInteger(addr) || addr < 0 || len < 0 || addr + len > BYTES) throw new RangeError("peek range outside the 1 MiB array");
+    const bytes = this.#array.slice(addr, addr + len), unknown = new Uint8Array(len);
+    for (let i = 0; i < len; i++) if (this.#isIndet(addr + i)) { unknown[i] = 1; bytes[i] = 0; }
+    return { bytes, unknown };
+  }
+
+  // ------------------------------------------------------------ fault injection (Stage 5B): interruption, range and indeterminate state ONLY.
+  // No outcome policy and no post-interruption array contents live here (faultpolicy.mjs holds synthetic fills, kept apart on purpose).
+  /**
+   * Arm one deterministic power cut. { op, nth = 1, at } with op one of FAULT_OPS, nth counting the matching cycles ACCEPTED after arming, and at exactly one of
+   * { atAccept: true } | { fraction } (0 <= f < 1 of the cycle's duration, floored to a microsecond) | { afterUs } (integer below the shortest duration the selector can match).
+   * A cut at or after the end of the cycle would be a normal completion and is refused. Single shot; a policy is refused (it belongs to faultpolicy.mjs).
+   */
+  armFault(spec = {}) {
+    const bad = (id, m) => { throw new FaultError(id, m); };
+    if (spec === null || typeof spec !== "object") bad("fault.bad-spec", "armFault takes { op, nth, at }");
+    if ("policy" in spec || "fill" in spec || "seed" in spec) bad("fault.policy-not-here", "an outcome policy belongs to faultpolicy.mjs, never to the chip model: the model only records the interruption");
+    const { op, nth = 1, at } = spec;
+    if (OUT_OF_SCOPE_OPS.has(op)) bad("fault.out-of-scope", `${String(op)} interruption is out of scope for this stage (page program, sector/block erase and chip erase only)`);
+    if (!FAULT_OPS.includes(op)) bad("fault.bad-op", `op must be one of ${FAULT_OPS.join(", ")}`);
+    if (!Number.isInteger(nth) || nth < 1) bad("fault.bad-nth", "nth must be an integer >= 1");
+    if (this.#fault) bad("fault.already-armed", "a fault is already armed (disarmFault() first)");
+    if (this.#poweredOff) bad("fault.use-restore", "the chip is powered off: powerRestore() before arming");
+    const forms = at && typeof at === "object" ? ["atAccept", "fraction", "afterUs"].filter((k) => k in at) : [];
+    if (forms.length !== 1) bad("fault.bad-at", "at must be exactly one of { atAccept: true } | { fraction } | { afterUs }");
+    const minDur = Math.min(...FAULT_KEYS[op].map((k) => this.#p.timingUs[this.#timing][k]));
+    if (forms[0] === "atAccept" && at.atAccept !== true) bad("fault.bad-at", "atAccept must be true");
+    if (forms[0] === "fraction" && !(typeof at.fraction === "number" && at.fraction >= 0 && at.fraction < 1)) bad("fault.bad-at", "fraction must be a number with 0 <= fraction < 1 (1 would be a normal completion)");
+    if (forms[0] === "afterUs" && !(Number.isInteger(at.afterUs) && at.afterUs >= 0 && at.afterUs < minDur)) bad("fault.bad-at", `afterUs must be an integer in [0, ${minDur}): at or after the end of the shortest matching cycle is a normal completion`);
+    this.#fault = { op, nth, at: { ...at }, seen: 0, scheduled: false };
+  }
+  disarmFault() { this.#fault = null; }
+
+  /**
+   * What the fault machinery knows AT THE CURRENT CHIP TIME. Like every entry point it settles first, so a cut that is due is reported as fired (never as a pending cycle)
+   * and a cycle that has completed has already updated the indeterminate set. Fully inert (all zero/empty) unless it has been used.
+   */
+  faultState() {
+    this.#settle();
+    return {
+      armed: this.#fault ? { op: this.#fault.op, nth: this.#fault.nth, at: { ...this.#fault.at }, seen: this.#fault.seen, scheduled: this.#fault.scheduled } : null,
+      poweredOff: this.#poweredOff,
+      firedCount: this.#faultCount,
+      last: this.#lastFault,
+      indeterminate: this.#indet.map(([lo, hi]) => [lo, hi]),
+      indeterminateBytes: this.#indet.reduce((n, [lo, hi]) => n + hi - lo + 1, 0),
+      indeterminateReads: this.#indetReads,
+      ops: { ...this.#stats },
+    };
+  }
+
+  /**
+   * Cut power NOW (harness-initiated) while a program/erase/chip-erase cycle is in flight. If a scheduled cut was already due, that cut is the one that happened and its record
+   * is returned. Refused (never silently completed) when no cycle is in flight or when the cycle is of an out-of-scope kind (WRSR, page erase).
+   */
+  powerCut() {
+    const wasOff = this.#poweredOff;
+    this.#settle();
+    if (this.#poweredOff) { if (wasOff) throw new FaultError("fault.already-off", "the chip is already powered off"); return this.#lastFault; }
+    if (!this.#busy) throw new FaultError("fault.no-cycle", "no program/erase cycle is in flight: nothing to interrupt (use powerCycle() for an orderly power-off)");
+    if (!this.#busy.meta.scope) throw new NotModeled("fault.out-of-scope", `a ${this.#busy.meta.op} cycle cannot be interrupted at this stage`);
+    return this.#fireCut(this.#now(), "harness");
+  }
+
+  /** Power returns after a cut: standby, WEL = 0, WIP = 0, non-volatile status bits retained, SRP 1:0 back to 0:0. Never resumes the interrupted cycle. */
+  powerRestore() {
+    this.#settle();
+    if (!this.#poweredOff) throw new FaultError("fault.not-off", "the chip is not powered off (a power cut has not fired)");
+    this.#poweredOff = false;
+    this.#busy = null;
+    this.#sr &= ~(SR.WEL | SR.WIP);
+    this.#unknown &= ~SR.WEL;
+    if (!(this.#unknown & (SR.SRP0 | SR.SRP1)) && (this.#sr & SR.SRP1) && !(this.#sr & SR.SRP0)) this.#sr &= ~SR.SRP1;
   }
 
   /** Power off and on. WEL clears; SRP1:SRP0 = 1:0 returns to 0:0 (datasheet note). Not allowed mid-cycle (fault injection). */
   powerCycle() {
     this.#settle();
+    if (this.#poweredOff) throw new FaultError("fault.use-restore", "the chip lost power in a cut: use powerRestore(), not powerCycle()");
     if (this.#busy) throw new NotModeled("nm.power-loss", "power loss during a program/erase/write cycle is fault injection, out of scope");
     this.#sr &= ~(SR.WEL | SR.WIP);
     this.#unknown &= ~SR.WEL;
@@ -149,17 +253,72 @@ export class ChipModel {
   }
   #settle() {
     const now = this.#now();
+    // CUT PRECEDENCE: a scheduled cut is checked BEFORE completion, so a cycle whose cut time has passed can never be observed as completed,
+    // however late the chip is next touched (cutAt < end always holds: armFault refuses anything that would be a normal completion).
+    if (this.#busy && this.#busy.cutAt !== undefined && now >= this.#busy.cutAt) { this.#fireCut(this.#busy.cutAt, "scheduled", now); return; }
     if (this.#busy && now >= this.#busy.end) {
       const b = this.#busy;
       this.#busy = null;
       b.apply();
+      this.#stats.completed++;
       this.#sr &= ~(SR.WEL | SR.WIP);            // WEL is reset by completion (both datasheets)
       this.#unknown &= ~SR.WEL;
     }
   }
-  #start(kind, key, apply, unknownBits = 0) {
-    this.#busy = { kind, end: this.#now() + this.#p.timingUs[this.#timing][key], apply, unknownBits };
+  #start(kind, key, apply, unknownBits = 0, meta = { scope: false, op: kind }) {
+    const startedAt = this.#now(), dur = this.#p.timingUs[this.#timing][key];
+    this.#stats.accepted++;
+    this.#ordinal++;
+    this.#busy = { kind, end: startedAt + dur, apply, unknownBits, meta, startedAt, ordinal: this.#ordinal };
+    if (meta.scope && this.#fault && !this.#fault.scheduled && matchesOp(this.#fault.op, meta.op) && ++this.#fault.seen === this.#fault.nth) {
+      const at = this.#fault.at, offset = at.atAccept ? 0 : "fraction" in at ? Math.floor(at.fraction * dur) : at.afterUs;
+      this.#busy.cutAt = startedAt + offset;                       // always < end
+      this.#fault.scheduled = true;
+    }
     return this.#result("executed");
+  }
+
+  /** The cycle in flight is interrupted: it never completes; its range becomes indeterminate; the chip is off until powerRestore(). */
+  #fireCut(cutAt, source, detectedAt = cutAt) {
+    const b = this.#busy, ranges = b.meta.ranges, before = [], unknownBefore = [], ifCompleted = [], unknownIfCompleted = [];
+    for (const [lo, hi] of ranges) for (let a = lo; a <= hi; a++) {
+      const unk = this.#isIndet(a) ? 1 : 0, pre = this.#array[a];
+      before.push(unk ? 0 : pre); unknownBefore.push(unk);
+      const post = b.meta.post(a, pre);                              // null: depends on an unknown byte
+      ifCompleted.push(post ?? 0); unknownIfCompleted.push(post === null ? 1 : 0);          // post is null exactly when a program would land on an indeterminate byte
+    }
+    const record = {
+      fired: true, source, op: b.meta.op, kind: b.kind, ordinal: b.ordinal, nth: source === "scheduled" && this.#fault ? this.#fault.nth : null,
+      startedAt: b.startedAt, cutAt, endWouldBeAt: b.end, detectedAt, wipAtCut: true,
+      profile: this.#p.name, timing: this.#timing,
+      ranges: ranges.map(([lo, hi]) => [lo, hi]),
+      // INPUTS for an outcome policy, not outcomes: what the range held before, and what a normal completion would have produced
+      before: Uint8Array.from(before), unknownBefore: Uint8Array.from(unknownBefore),
+      ifCompleted: Uint8Array.from(ifCompleted), unknownIfCompleted: Uint8Array.from(unknownIfCompleted),
+      indeterminate: true,
+    };
+    this.#busy = null;                                               // the cycle is discarded: apply() never runs
+    this.#fault = null;
+    this.#poweredOff = true;
+    this.#stats.interrupted++;
+    this.#faultCount++;
+    for (const r of ranges) this.#addIndet(r[0], r[1]);
+    this.#lastFault = record;
+    return record;
+  }
+
+  // ---- the indeterminate set: sorted, disjoint [lo, hi] ranges, kept beside (never inside) the array
+  #isIndet(a) { for (const [lo, hi] of this.#indet) { if (a < lo) return false; if (a <= hi) return true; } return false; }
+  #overlapsIndet(lo, hi) { for (const [l, h] of this.#indet) { if (l > hi) return false; if (h >= lo) return true; } return false; }
+  #addIndet(lo, hi) {
+    const all = [...this.#indet, [lo, hi]].sort((a, b) => a[0] - b[0]), out = [];
+    for (const r of all) { const last = out[out.length - 1]; if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]); else out.push([r[0], r[1]]); }
+    this.#indet = out;
+  }
+  #clearIndet(lo, hi) {
+    const out = [];
+    for (const [l, h] of this.#indet) { if (h < lo || l > hi) { out.push([l, h]); continue; } if (l < lo) out.push([l, lo - 1]); if (h > hi) out.push([hi + 1, h]); }
+    this.#indet = out;
   }
   #result(outcome, out = null, unknown = null) { return { outcome, out, unknown }; }
 
@@ -234,8 +393,14 @@ export class ChipModel {
   #readArray(op, tx, read) {
     if (tx.length !== (op === 0x03 ? 4 : 5)) throw new UnspecifiedBehavior("read.malformed", `${hex(op)} needs ${op === 0x03 ? "3 address bytes" : "3 address bytes and a dummy byte"}`);
     const start = this.#address(tx), out = new Uint8Array(read);
-    for (let i = 0; i < read; i++) out[i] = this.#array[(start + i) % BYTES];          // rolls over to 0 after the last address
-    return this.#result("executed", out, new Uint8Array(read));
+    const unknown = new Uint8Array(read);
+    let touched = false;
+    for (let i = 0; i < read; i++) {
+      const a = (start + i) % BYTES;                                                   // rolls over to 0 after the last address
+      if (this.#indet.length && this.#isIndet(a)) { unknown[i] = 0xff; touched = true; } else out[i] = this.#array[a];   // indeterminate: unknown, not a value
+    }
+    if (touched) this.#indetReads++;
+    return this.#result("executed", out, unknown);
   }
 
   // after a rejected or ignored write command: WEL (which was 1) is now unknown unless a datasheet statement says otherwise
@@ -270,7 +435,10 @@ export class ChipModel {
     // The 256-byte page buffer: byte i lands at (A7-A0 + i) mod 256; a later byte for the same position replaces an earlier one.
     const latch = new Uint8Array(GEOMETRY.page), used = new Uint8Array(GEOMETRY.page);
     for (let i = 4; i < tx.length; i++) { const o = ((addr & 0xff) + (i - 4)) & 0xff; latch[o] = tx[i]; used[o] = 1; }
-    return this.#start("program", "pp", () => { for (let o = 0; o < GEOMETRY.page; o++) if (used[o]) this.#array[page + o] &= latch[o]; });
+    const runs = []; for (let o = 0; o < GEOMETRY.page; o++) if (used[o]) { const r = runs[runs.length - 1]; if (r && r[1] === page + o - 1) r[1] = page + o; else runs.push([page + o, page + o]); }
+    // range = the bytes the command latches (a program over an indeterminate byte leaves it indeterminate: the model does not guess a result)
+    return this.#start("program", "pp", () => { for (let o = 0; o < GEOMETRY.page; o++) if (used[o]) this.#array[page + o] &= latch[o]; }, 0,
+      { scope: true, op: "program", ranges: runs, dependsOnOld: true, post: (a, pre) => (this.#isIndet(a) ? null : pre & latch[a - page]) });
   }
 
   #erase(op, tx, partialBits) {
@@ -279,7 +447,9 @@ export class ChipModel {
     if (partialBits || tx.length !== 4) return this.#rejectedBoundary(name, partialBits);
     const addr = this.#address(tx), lo = addr - (addr % size), hi = lo + size - 1;
     if (this.#overlapsProtected(lo, hi)) return this.#ignoredProtected(name);
-    return this.#start("erase", name, () => this.#array.fill(0xff, lo, hi + 1));
+    const opName = { 0x20: "erase4k", 0x52: "erase32k", 0xd8: "erase64k" }[op];       // 81h (page erase) is out of scope: scope false, never matched, never cut
+    return this.#start("erase", name, () => { this.#array.fill(0xff, lo, hi + 1); this.#clearIndet(lo, hi); }, 0,
+      opName ? { scope: true, op: opName, ranges: [[lo, hi]], dependsOnOld: false, post: () => 0xff } : { scope: false, op: "erase-page" });
   }
 
   #chipErase(tx, partialBits) {
@@ -300,7 +470,8 @@ export class ChipModel {
       run = bpAllZero;
     }
     if (!run) return this.#ignoredProtected("ce");
-    return this.#start("erase", "ce", () => this.#array.fill(0xff));
+    return this.#start("erase", "ce", () => { this.#array.fill(0xff); this.#clearIndet(0, BYTES - 1); }, 0,
+      { scope: true, op: "chip-erase", ranges: [[0, BYTES - 1]], dependsOnOld: false, post: () => 0xff });
   }
 
   #wrsr(tx, partialBits) {
@@ -324,6 +495,6 @@ export class ChipModel {
       unknownAfter |= HIGH_WRITABLE;                                               // UC: not stated
     }
     const inFlux = ((old ^ next) & (LOW_WRITABLE | HIGH_WRITABLE)) | (unknownAfter & ~this.#unknown);
-    return this.#start("wrsr", "wrsr", () => { this.#sr = next; this.#unknown = unknownAfter; }, inFlux);
+    return this.#start("wrsr", "wrsr", () => { this.#sr = next; this.#unknown = unknownAfter; }, inFlux, { scope: false, op: "wrsr" });
   }
 }
