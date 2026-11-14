@@ -138,7 +138,7 @@ code sector halts the CPU (see `selftest.mjs`).
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
 | `npm run test:machine:quick` | quick tier alone (159 tests: 30 harness incl. one real Felucca boot + 129 chip-model) | ~12 s |
-| `npm run test:machine` | full tier: every test (232 = 103 harness + 129 chip-model), including the slower firmware-behaviour checks. 60 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 172 run | ~90 s (~240 s with the chip engine) |
+| `npm run test:machine` | full tier: every test (242 = 113 harness + 129 chip-model), including the slower firmware-behaviour checks. 70 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests + 10 fault-injection live tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 172 run | ~90 s (~240 s with the chip engine) |
 | `node ci/machine/selftest.mjs --filter "chip live"` | only the live chip conformance tests (needs the chip engine) | ~9 s |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the

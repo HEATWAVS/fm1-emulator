@@ -127,7 +127,7 @@ index b342349..6c2560a 100644
              }
              Region::Iomap => self.sfr_set(addr, value),
 diff --git a/crates/fm1-soc/src/machine.rs b/crates/fm1-soc/src/machine.rs
-index b021ae0..1f0661f 100644
+index b021ae0..a518816 100644
 --- a/crates/fm1-soc/src/machine.rs
 +++ b/crates/fm1-soc/src/machine.rs
 @@ -14,6 +14,10 @@ use fm1_core::{Bus, Cpu, PlainState};
@@ -174,7 +174,7 @@ index b021ae0..1f0661f 100644
          run_cpu1(c1, soc, dt)?;
      }
      Ok(())
-@@ -1120,4 +1136,484 @@ mod tests {
+@@ -1120,4 +1136,505 @@ mod tests {
              assert_eq!((a.pc, a.insn_count, sa.periph.cycles), (b.pc, b.insn_count, sb.periph.cycles), "call {i}");
          }
      }
@@ -516,6 +516,27 @@ index b021ae0..1f0661f 100644
 +        }
 +    }
 +
++    /// The same with core 1 PAUSED (held by the other core): `run_cpu1` returns Ok at once without looking at the cut, so the stop after `run_dual`'s own sync is not
++    /// redundant there: without it the call returns Ok and the machine only learns of the power cut one slice later.
++    #[test]
++    fn run_dual_reports_the_cut_when_core_1_is_paused_too() {
++        let (mut code, _) = poll_code();
++        let c1_at = code.len() as u32;
++        code.extend_from_slice(&SPIN);
++        let (_cpu, mut soc) = cut_machine(&code, &[], false, false, Some(10), FLASH_IDX);
++        soc.paused[1] = true;
++        assert!(soc.core_paused(1));
++        let mut c1 = Cpu::new(XIP_BASE + c1_at);
++        c1.core_id = 1;
++        let mut c1 = Some(c1);
++        let r = run_dual(&mut c1, &mut soc, SLICE, 1 << 20, false, |s, k| {
++            s.periph.cycles += k as u64; // a slice that ends with the cut due and unprocessed
++            Ok(k)
++        });
++        assert_eq!(r, Err(POWER_CUT.to_string()), "the call itself reports the power cut");
++        assert!(soc.power_cut);
++    }
++
 +    /// A cut scheduled while the machine is already running, with the event queue empty (next_due far away), is not missed: scheduling forces a recompute.
 +    #[test]
 +    fn a_cut_scheduled_into_a_running_machine_is_not_missed() {
@@ -711,10 +732,10 @@ index 004a507..c5c64cb 100644
              if self.uart.con0 & 1 != 0 {
 diff --git a/crates/fm1-soc/src/spichip.rs b/crates/fm1-soc/src/spichip.rs
 new file mode 100644
-index 0000000..2a927a5
+index 0000000..060212f
 --- /dev/null
 +++ b/crates/fm1-soc/src/spichip.rs
-@@ -0,0 +1,2180 @@
+@@ -0,0 +1,2197 @@
 +//! Datasheet-based SPI NOR chip state machine (HEATWAVS Stage C1), used by `SpiFlash` when a
 +//! chip profile is selected. The default (no profile) is the original instantaneous model.
 +//!
@@ -2869,6 +2890,23 @@ index 0000000..2a927a5
 +        assert_eq!(r.c.cut_deadline(), Some(start + end - 1));
 +    }
 +
++    /// The journal of a cycle belongs to that cycle: once it completes it is gone. (Journaling can be switched off, and a later in-scope cycle accepted without a journal must
++    /// be refused by `power_cut()`, not cut with the finished cycle's ranges.)
++    #[test]
++    fn a_finished_cycles_journal_cannot_be_used_to_cut_a_later_unjournaled_cycle() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.set_fault_injection(true);
++        r.clock(T0);
++        r.accept(FaultOp::Erase4k); // journaled, completes normally
++        r.clock(T0 + 100_000);
++        assert_eq!(r.state().completed, 1);
++        r.c.set_fault_injection(false);
++        r.clock(T0 + 100_001);
++        r.accept(FaultOp::Erase32k); // in scope, accepted with journaling off: nothing journaled
++        assert_eq!(r.c.power_cut(), Err(FaultError::NotEnabled), "refused, never faked from an old cycle's journal");
++        assert!(!r.state().powered_off && r.c.indeterminate().is_empty());
++    }
++
 +    /// Determinism: the same flash, profile, timing, trigger and clock moves give identical records, lists and memory.
 +    #[test]
 +    fn identical_runs_give_identical_records_and_memory() {
@@ -3592,7 +3630,7 @@ index 0000000..a10f4e9
 +    }
 +}
 diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
-index fa2ab51..60ed087 100644
+index fa2ab51..e2b32f0 100644
 --- a/crates/fm1-web/src/lib.rs
 +++ b/crates/fm1-web/src/lib.rs
 @@ -33,6 +33,8 @@ struct Machine {
@@ -3613,7 +3651,7 @@ index fa2ab51..60ed087 100644
              flash0, usr: None, started: false, pace: Pace::default() }
      }
  
-@@ -180,9 +182,15 @@ impl Machine {
+@@ -180,9 +182,18 @@ impl Machine {
      fn run(&mut self, n: u32) {
          let jit = self.cpu.jit_on;
          if let Some(c1) = self.cpu1.as_mut() { c1.profile = self.cpu.profile; }
@@ -3628,10 +3666,52 @@ index fa2ab51..60ed087 100644
 +            // a power cut is a state of its own, never a CPU fault (Component 5)
 +            Err(_) if self.soc.power_cut => self.power_cut = true,
 +            Err(_) => self.halted = true,
++        }
++        if self.soc.power_cut {
++            self.power_cut = true; // a cut that fired in the bulk advance ends the run through Ok
          }
      }
  }
-@@ -263,6 +271,120 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
+@@ -197,6 +208,17 @@ static mut LEDS: [f32; 41] = [0.0; 41];
+ static mut PADS: [u32; 16] = [0; 16];
+ static mut INSNS: u64 = 0;
+ 
++/// Fire a flash power cut that is due, before anything observes the machine or hands control back (Component 5, Stage 5C-3). Every export that moves the SoC clock
++/// (`fm1_render`, `fm1_test_advance_us`) or shows or answers from the flash (`fm1_flash`, `fm1_xip`, `fm1_flash_wip`, `fm1_flash_events`, `fm1_flash_nv_status`,
++/// the test bus, every `fm1_fault_*`) calls this first, so a cut due at the cycle the clock has reached can never be observed as a completed cycle. Nearly free
++/// when nothing is scheduled.
++fn sync_cut(m: &mut Machine) {
++    m.soc.sync_flash_cut();
++    if m.soc.power_cut {
++        m.power_cut = true;
++    }
++}
++
+ #[allow(static_mut_refs)]
+ fn machine() -> Option<&'static mut Machine> {
+     // SAFETY: wasm32 is single-threaded per instance; every export runs to completion.
+@@ -244,12 +266,18 @@ pub extern "C" fn fm1_boot_fwsc(ptr: *mut u8, len: u32, syx: *mut u8, syx_len: u
+ /// bank imports consume fm1_alloc allocations and are only accepted before the first render.
+ #[no_mangle]
+ pub extern "C" fn fm1_flash() -> *const u8 {
+-    machine().map_or(std::ptr::null(), |m| m.soc.flash.mem.as_ptr())
++    machine().map_or(std::ptr::null(), |m| {
++        sync_cut(m);
++        m.soc.flash.mem.as_ptr()
++    })
+ }
+ /// Borrowed decrypted/memory-mapped view, for inspection alongside raw flash.
+ #[no_mangle]
+ pub extern "C" fn fm1_xip() -> *const u8 {
+-    machine().map_or(std::ptr::null(), |m| m.soc.xip.as_ptr())
++    machine().map_or(std::ptr::null(), |m| {
++        sync_cut(m);
++        m.soc.xip.as_ptr()
++    })
+ }
+ #[no_mangle]
+ pub extern "C" fn fm1_xip_len() -> u32 { machine().map_or(0, |m| m.soc.xip.len() as u32) }
+@@ -263,6 +291,345 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
  pub extern "C" fn fm1_flash_revision() -> u32 { machine().map_or(0, |m| m.soc.flash.revision) }
  #[no_mangle]
  pub extern "C" fn fm1_flash_busy() -> u32 { machine().is_some_and(|m| m.soc.flash.busy()) as u32 }
@@ -3667,17 +3747,23 @@ index fa2ab51..60ed087 100644
 +/// The chip status register's WIP bit at the current emulated time (0 without a chip profile).
 +#[no_mangle]
 +pub extern "C" fn fm1_flash_wip() -> u32 {
-+    machine().is_some_and(|m| m.soc.flash.wip(m.soc.periph.cycles, m.soc.periph.hz)) as u32
++    machine().is_some_and(|m| {
++        sync_cut(m);
++        m.soc.flash.wip(m.soc.periph.cycles, m.soc.periph.hz)
++    }) as u32
 +}
 +/// Chip events: which = 0 commands ignored as unspecified by the datasheet, 1 opcodes outside the model.
 +#[no_mangle]
 +pub extern "C" fn fm1_flash_events(which: u32) -> u32 {
-+    machine().and_then(|m| m.soc.flash.chip.as_ref()).map_or(0, |c| match which {
-+        0 => c.events.unspecified,
-+        1 => c.events.not_modeled,
-+        2 => c.events.last_not_modeled as u32, // the most recent opcode counted in 1
-+        3 => c.events.uid_unknown_reads,       // 4Bh reads answered without a unique-ID fixture
-+        _ => 0,
++    machine().map_or(0, |m| {
++        sync_cut(m);
++        m.soc.flash.chip.as_ref().map_or(0, |c| match which {
++            0 => c.events.unspecified,
++            1 => c.events.not_modeled,
++            2 => c.events.last_not_modeled as u32, // the most recent opcode counted in 1
++            3 => c.events.uid_unknown_reads,       // 4Bh reads answered without a unique-ID fixture
++            _ => 0,
++        })
 +    })
 +}
 +/// Configure the chip's 128-bit unique ID, the 16 bytes 4Bh transmits (w0 = bytes 0-3 with byte 0 in the top byte, ..., w3 = bytes 12-15). A caller-supplied
@@ -3705,6 +3791,7 @@ index fa2ab51..60ed087 100644
 +#[no_mangle]
 +pub extern "C" fn fm1_flash_nv_status() -> u32 {
 +    machine().map_or(0, |m| {
++        sync_cut(m);
 +        let (c, hz) = (m.soc.periph.cycles, m.soc.periph.hz);
 +        m.soc.flash.chip.as_mut().map_or(0, |chip| {
 +            chip.set_clock(c, hz);
@@ -3725,22 +3812,240 @@ index fa2ab51..60ed087 100644
 +#[no_mangle]
 +pub extern "C" fn fm1_test_bus_write32(addr: u32, value: u32) -> u32 {
 +    machine().map_or(1, |m| {
++        sync_cut(m);
 +        fm1_core::Bus::write32(&mut m.soc, addr, value);
++        sync_cut(m);
 +        0
 +    })
 +}
 +#[no_mangle]
 +pub extern "C" fn fm1_test_bus_read32(addr: u32) -> u32 {
-+    machine().map_or(0, |m| fm1_core::Bus::read32(&mut m.soc, addr))
++    machine().map_or(0, |m| {
++        sync_cut(m);
++        fm1_core::Bus::read32(&mut m.soc, addr)
++    })
 +}
 +/// Move the SoC cycle counter forward by `us` microseconds of emulated time.
 +#[no_mangle]
 +pub extern "C" fn fm1_test_advance_us(us: u32) -> u32 {
 +    machine().map_or(1, |m| {
 +        m.soc.periph.cycles += m.soc.periph.hz * us as u64 / 1_000_000;
++        sync_cut(m); // this hook moves the clock without any event pass: a cut that is now due fires before control returns
 +        0
 +    })
 +}
++// ---------------------------------------------------------------- flash fault injection (Component 5, Stage 5C-3)
++// Configure, trigger, restore and inspect a power cut of the flash chip (a chip profile is required: 10 = none). The engine records interruption, affected range and
++// indeterminate state ONLY: no synthetic fill lives here, and the array bytes of an interrupted range are a labelled placeholder (the pre-image), never an outcome.
++// Error codes: 0 ok, 1 bad nth, 2 bad trigger, 3 already armed, 4 chip is powered off (restore first), 5 no cycle in flight, 6 already off, 7 not off, 8 out of scope
++// (write-status, page erase), 9 the running cycle was accepted before fault injection was enabled, 10 no chip profile, 11 bad argument.
++fn fault_code(e: fm1_soc::spichip::FaultError) -> u32 {
++    use fm1_soc::spichip::FaultError::*;
++    match e {
++        BadNth => 1,
++        BadAt => 2,
++        AlreadyArmed => 3,
++        UseRestore => 4,
++        NoCycle => 5,
++        AlreadyOff => 6,
++        NotOff => 7,
++        OutOfScope => 8,
++        NotEnabled => 9,
++    }
++}
++const FAULT_NO_CHIP: u32 = 10;
++const FAULT_BAD_ARG: u32 = 11;
++
++/// Journal every in-scope cycle from now on, so `fm1_fault_cut` can interrupt one without a trigger. (`fm1_fault_arm` turns it on.) Off by default.
++#[no_mangle]
++pub extern "C" fn fm1_fault_enable(on: u32) -> u32 {
++    machine().and_then(|m| m.soc.flash.chip.as_mut()).map_or(FAULT_NO_CHIP, |c| {
++        c.set_fault_injection(on != 0);
++        0
++    })
++}
++
++/// Arm one single-shot power cut. `op`: 0 page program, 1 4 KiB sector erase, 2 32 KiB block erase, 3 64 KiB block erase, 4 any of those three erases, 5 chip erase,
++/// 6 any of the in-scope cycles. `nth`: the n-th matching cycle accepted from now (>= 1). `at_kind`: 0 at the accept (`at_value` ignored), 1 a fraction of the
++/// cycle's duration (`at_value` in [0, 1): floor(fraction * duration in microseconds) microseconds), 2 a number of microseconds, 3 a number of SoC CYCLES (the exact
++/// integer form). For kinds 2 and 3 `at_value` must be a whole number (exact up to 2^53). A cut at or after the end of the cycle is refused (2).
++#[no_mangle]
++pub extern "C" fn fm1_fault_arm(op: u32, nth: u32, at_kind: u32, at_value: f64) -> u32 {
++    use fm1_soc::spichip::{FaultAt, FaultOp, FaultSpec};
++    let op = match op {
++        0 => FaultOp::Program,
++        1 => FaultOp::Erase4k,
++        2 => FaultOp::Erase32k,
++        3 => FaultOp::Erase64k,
++        4 => FaultOp::Erase,
++        5 => FaultOp::ChipErase,
++        6 => FaultOp::Any,
++        _ => return FAULT_BAD_ARG,
++    };
++    let whole = at_value.is_finite() && at_value >= 0.0 && at_value.fract() == 0.0 && at_value <= 9_007_199_254_740_992.0;
++    let at = match at_kind {
++        0 => FaultAt::AtAccept,
++        1 => FaultAt::Fraction(at_value),
++        2 if whole && at_value <= u32::MAX as f64 => FaultAt::AfterUs(at_value as u32),
++        3 if whole => FaultAt::AfterCycles(at_value as u64),
++        _ => return FAULT_BAD_ARG,
++    };
++    machine().map_or(FAULT_NO_CHIP, |m| {
++        if m.soc.flash.chip.is_none() {
++            return FAULT_NO_CHIP;
++        }
++        sync_cut(m);
++        m.soc.arm_flash_fault(FaultSpec { op, nth, at }).map_or_else(fault_code, |_| 0)
++    })
++}
++
++/// Remove the trigger (a cut already scheduled for the running cycle still happens).
++#[no_mangle]
++pub extern "C" fn fm1_fault_disarm() -> u32 {
++    machine().and_then(|m| m.soc.flash.chip.as_mut()).map_or(FAULT_NO_CHIP, |c| {
++        c.disarm_fault();
++        0
++    })
++}
++
++/// Cut power NOW, while a program, erase or chip erase is in flight (the reference model's `powerCut()`). If a scheduled cut was already due, that is the one that
++/// happened. The machine goes terminal (`fm1_power_cut`).
++#[no_mangle]
++pub extern "C" fn fm1_fault_cut() -> u32 {
++    machine().map_or(FAULT_NO_CHIP, |m| {
++        if m.soc.flash.chip.is_none() {
++            return FAULT_NO_CHIP;
++        }
++        sync_cut(m);
++        let r = m.soc.power_cut_flash();
++        sync_cut(m);
++        r.map_or_else(fault_code, |_| 0)
++    })
++}
++
++/// Power returns to the CHIP after a cut (standby, WEL = 0, non-volatile status kept, the interrupted cycle never resumes, the indeterminate list kept). The machine stays
++/// terminal: the SoC lost power too, only a reboot restarts it. For chip-level tests and the oracle replay.
++#[no_mangle]
++pub extern "C" fn fm1_fault_restore() -> u32 {
++    machine().map_or(FAULT_NO_CHIP, |m| {
++        sync_cut(m);
++        m.soc.flash.chip.as_mut().map_or(FAULT_NO_CHIP, |c| c.power_restore().map_or_else(fault_code, |_| 0))
++    })
++}
++
++/// Fault-injection state at the current cycle (a due cut is fired first). which: 0 the machine lost power in a cut (terminal; distinct from `fm1_halted`), 1 the chip is
++/// powered off, 2 a trigger is armed, 3 the armed trigger has scheduled its cut, 4 matching cycles seen by the armed trigger, 5 journaling is on, 6 cuts fired,
++/// 7 cycles accepted (every kind), 8 cycles completed, 9 cycles interrupted, 10 number of indeterminate ranges, 11 indeterminate bytes, 12 reads of indeterminate
++/// bytes (one per transaction), 13 SPI bytes offered to the powered-off chip (answered 0xFF), 14 `power_cycle` calls refused while off, 15 a cut record exists.
++#[no_mangle]
++pub extern "C" fn fm1_fault_state(which: u32) -> u32 {
++    machine().map_or(0, |m| {
++        sync_cut(m);
++        if which == 0 {
++            return (m.power_cut || m.soc.power_cut) as u32;
++        }
++        let (c, hz) = (m.soc.periph.cycles, m.soc.periph.hz);
++        m.soc.flash.set_clock(c, hz);
++        let Some(chip) = m.soc.flash.chip.as_mut() else { return 0 };
++        let st = chip.fault_state();
++        match which {
++            1 => st.powered_off as u32,
++            2 => st.armed.is_some() as u32,
++            3 => st.armed.is_some_and(|a| a.2) as u32,
++            4 => st.armed.map_or(0, |a| a.1),
++            5 => st.journaling as u32,
++            6 => st.fired,
++            7 => st.accepted,
++            8 => st.completed,
++            9 => st.interrupted,
++            10 => st.indeterminate.len() as u32,
++            11 => st.indeterminate.iter().map(|&(l, h)| (h - l + 1) as u32).sum(),
++            12 => st.indeterminate_reads,
++            13 => st.powered_off_accesses,
++            14 => st.power_cycle_refused,
++            15 => st.last.is_some() as u32,
++            _ => 0,
++        }
++    })
++}
++
++/// The last cut's record, for auditing; -1 when there is none. Times are SoC cycles (see `fm1_cycles`). which: 0 the REQUESTED deadline (accept + offset), 1 the ACTUAL
++/// cycle at which the chip was settled and the cut fired, 2 the cycle the interrupted cycle was accepted, 3 the cycle it would have ended, 4 its ordinal (every cycle
++/// accepted since power-on counts), 5 the trigger's `nth` (-1 for a harness cut), 6 source (0 scheduled, 1 harness), 7 op (as `fm1_fault_arm`, never 4 or 6),
++/// 8 number of ranges at risk, 9 length in bytes of each image (`fm1_fault_bytes`).
++#[no_mangle]
++pub extern "C" fn fm1_fault_record(which: u32) -> f64 {
++    machine().map_or(-1.0, |m| {
++        sync_cut(m);
++        let Some(r) = m.soc.flash.chip.as_ref().and_then(|c| c.last_cut()) else { return -1.0 };
++        match which {
++            0 => r.cut_at as f64,
++            1 => r.detected_at as f64,
++            2 => r.started_at as f64,
++            3 => r.end_would_be_at as f64,
++            4 => r.ordinal as f64,
++            5 => r.nth.map_or(-1.0, |n| n as f64),
++            6 => (r.source == fm1_soc::spichip::CutSource::Harness) as u32 as f64,
++            7 => r.op as u32 as f64,
++            8 => r.ranges.len() as f64,
++            9 => r.before.len() as f64,
++            _ => -1.0,
++        }
++    })
++}
++
++/// The i-th range of the last cut's record (the bytes that cycle put at risk): which 0 first address, 1 last address (inclusive). 0xFFFFFFFF if there is none.
++#[no_mangle]
++pub extern "C" fn fm1_fault_record_range(i: u32, which: u32) -> u32 {
++    machine().map_or(u32::MAX, |m| {
++        sync_cut(m);
++        m.soc.flash.chip.as_ref().and_then(|c| c.last_cut()).and_then(|r| r.ranges.get(i as usize)).map_or(u32::MAX, |&(lo, hi)| if which == 0 { lo as u32 } else { hi as u32 })
++    })
++}
++
++/// The i-th indeterminate range (bytes whose contents are physically unknown; the list outlives any fill and is cleared only by a complete erase): which 0 first address,
++/// 1 last address (inclusive). 0xFFFFFFFF past the end. Bytes inside it in `fm1_flash()` are placeholders or test input, never a claim.
++#[no_mangle]
++pub extern "C" fn fm1_fault_range(i: u32, which: u32) -> u32 {
++    machine().map_or(u32::MAX, |m| {
++        sync_cut(m);
++        m.soc.flash.chip.as_ref().and_then(|c| c.indeterminate().get(i as usize).copied()).map_or(u32::MAX, |(lo, hi)| if which == 0 { lo as u32 } else { hi as u32 })
++    })
++}
++
++/// A pointer to one of the last cut's images, `fm1_fault_record(9)` bytes each, ranges back to back in order (null if there is no record). These are INPUTS for an
++/// outcome policy, never outcomes: which 0 what the range held before (0 where unknown), 1 its unknown mask, 2 what a normal completion would have produced,
++/// 3 its unknown mask. Valid until the next cut.
++#[no_mangle]
++pub extern "C" fn fm1_fault_bytes(which: u32) -> *const u8 {
++    machine().map_or(std::ptr::null(), |m| {
++        sync_cut(m);
++        let Some(r) = m.soc.flash.chip.as_ref().and_then(|c| c.last_cut()) else { return std::ptr::null() };
++        match which {
++            0 => r.before.as_ptr(),
++            1 => r.unknown_before.as_ptr(),
++            2 => r.if_completed.as_ptr(),
++            3 => r.unknown_if_completed.as_ptr(),
++            _ => std::ptr::null(),
++        }
++    })
++}
++
++/// 1 if the machine lost power in a flash cut: a terminal state of its own, never reported by `fm1_halted` (a CPU fault).
++#[no_mangle]
++pub extern "C" fn fm1_power_cut() -> u32 {
++    machine().map_or(0, |m| {
++        sync_cut(m);
++        (m.power_cut || m.soc.power_cut) as u32
++    })
++}
++
++/// The SoC cycle counter (exact up to 2^53): the clock every cycle number of `fm1_fault_record` is in.
++#[no_mangle]
++pub extern "C" fn fm1_cycles() -> f64 {
++    machine().map_or(0.0, |m| m.soc.periph.cycles as f64)
++}
++
 +/// The chip's WP# pin level (1 = high, the default). Needs a chip profile.
 +#[no_mangle]
 +pub extern "C" fn fm1_test_set_wp(high: u32) -> u32 {
@@ -3752,7 +4057,15 @@ index fa2ab51..60ed087 100644
  #[no_mangle]
  pub extern "C" fn fm1_flash_restore(ptr: *mut u8, len: u32) -> u32 {
      let bytes = unsafe { Vec::from_raw_parts(ptr, len as usize, len as usize) };
-@@ -346,7 +468,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
+@@ -334,6 +701,7 @@ pub extern "C" fn fm1_bench_script(ptr: *mut u8, len: u32) -> u32 {
+ #[no_mangle]
+ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
+     let Some(m) = machine() else { return 0 };
++    sync_cut(m);
+     m.started = true;
+     #[cfg(target_arch = "wasm32")]
+     {
+@@ -346,7 +714,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
      m.pace.begin(frames, m.soc.periph.hz);
      // a cap below what the pace needs would drop out where running for the frames alone did not
      let max_insns = max_insns.max(m.pace.least(frames, m.soc.periph.hz, ahead).min(u32::MAX as u64) as u32);
@@ -3761,7 +4074,15 @@ index fa2ab51..60ed087 100644
          let (c0, h0) = (m.soc.periph.cycles, m.soc.periph.audio_halves);
          m.run(20_000);
          spent += 20_000;
-@@ -880,3 +1002,43 @@ mod pace_tests {
+@@ -354,6 +722,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
+         m.audio.extend(m.soc.periph.audio.drain(..));
+     }
+     m.pace.end();
++    sync_cut(m);
+     unsafe { INSNS += spent as u64 };
+     let have = (m.audio.len() / 2).min(frames);
+     #[allow(static_mut_refs)]
+@@ -880,3 +1249,47 @@ mod pace_tests {
          }
      }
  }
@@ -3798,6 +4119,10 @@ index fa2ab51..60ed087 100644
 +        m.run(10_000);
 +        assert_eq!(m.cpu.insn_count, insns, "nothing runs after a power cut");
 +        assert!(m.power_cut && !m.halted);
++        // and nothing is even started afterwards: a latched core 1 release is not taken (the early return in `Machine::run`)
++        m.soc.cpu1_release = true;
++        m.run(10_000);
++        assert!(m.cpu1.is_none() && m.soc.cpu1_release, "a machine without power started core 1");
 +
 +        // a CPU fault is still a halt, and not a power cut
 +        let mut f = Machine::new(vec![0xff; 0x4000], fm1_soc::XIP_BASE, 100, None);

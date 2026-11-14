@@ -59,6 +59,9 @@ export async function loadEngine({ wasmPath = resolve(EMULATOR_DIR, "fm1_web.was
       selectFlashId: has("fm1_flash_id_set"),          // native: an engine export (none yet)
       flashIdPatch: flashIdLayout !== null,           // runtime patch on a validated build (flashid.mjs)
       flashFaultInjection: has("fm1_flash_fault"),
+      // Component 5 (Stage 5C-3): power-cut fault injection of the flash chip in a chip-profile engine (arm, cut, restore, inspect, the terminal power-cut status
+      // distinct from fm1_halted, the cycle counter the records are in). The shipped engine has none of these.
+      faultInjection: has("fm1_fault_enable", "fm1_fault_arm", "fm1_fault_disarm", "fm1_fault_cut", "fm1_fault_restore", "fm1_fault_state", "fm1_fault_record", "fm1_fault_record_range", "fm1_fault_range", "fm1_fault_bytes", "fm1_power_cut", "fm1_cycles"),
       // A chip-profile engine (built by ci/engine/build.mjs; the shipped engine has none of these). Profile selection,
       // the status register's WIP bit (distinct from fm1_flash_busy, which is chip-select), and the unspecified/unmodelled counters.
       selectFlashChip: has("fm1_flash_chip", "fm1_flash_timing"),

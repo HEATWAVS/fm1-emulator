@@ -40,12 +40,12 @@ from `pin.json`.
 2. the pinned upstream commit exists in the clone;
 3. `git apply --check` then apply (with `core.autocrlf=false`: the upstream blobs are LF) succeeds;
 4. the generated tables' sha256 equals `pin.json` (if `chipspec.mjs` changes, rebuild and update `pin.json` deliberately);
-5. the artifact's exports are **exactly** the 60 in `pin.json` (the 48 of an unpatched v0.3.0 build plus twelve: `fm1_flash_chip`,
+5. the artifact's exports are **exactly** the 72 in `pin.json` (the 48 of an unpatched v0.3.0 build, twelve chip/test exports and twelve fault-injection exports (`fm1_fault_*`, `fm1_power_cut`, `fm1_cycles`; docs/dev/FAULT-INJECTION.md section 12); the twelve chip/test exports are: `fm1_flash_chip`,
    `fm1_flash_timing`, `fm1_flash_wip`, `fm1_flash_events`, `fm1_flash_nv_status`, `fm1_flash_nv_restore`, `fm1_flash_uid_set`, `fm1_flash_uid_clear`, and four test-only bus hooks
    `fm1_test_bus_write32`, `fm1_test_bus_read32`, `fm1_test_advance_us`, `fm1_test_set_wp`; none removed) and its only import is `env.fm1_jit_compile`;
 6. the artifact's sha256 equals the verified hash **for the same toolchain**. `pin.json` records one:
    `rustc 1.97.1 (8bab26f4f 2026-07-14)` on Windows x64 gives
-   `30b01bfa203f14fe423748f02ff3b627c087f05aa5ee001c23446101a812fd0d` (2,735,372 bytes); an unpatched build of the same source with
+   `d13b88d174163146359df8d03d1ba5a92226493a5206d79e694f8d928c74e9e2` (2,745,807 bytes); an unpatched build of the same source with
    the same recipe gives `943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe`. A different toolchain may produce a
    different hash legitimately: the build then says "no verified hash" and still checks everything else.
 
