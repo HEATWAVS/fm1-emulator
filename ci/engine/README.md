@@ -45,7 +45,7 @@ from `pin.json`.
    `fm1_test_bus_write32`, `fm1_test_bus_read32`, `fm1_test_advance_us`, `fm1_test_set_wp`; none removed) and its only import is `env.fm1_jit_compile`;
 6. the artifact's sha256 equals the verified hash **for the same toolchain**. `pin.json` records one:
    `rustc 1.97.1 (8bab26f4f 2026-07-14)` on Windows x64 gives
-   `70796e015a26629017e9a7101eb142de2a7f322c0b8665f0a60d76289e65b785` (2,747,241 bytes); an unpatched build of the same source with
+   `28dacdb40cee4f7620f306f761a35b820116b62981874dfeb657afe269ba764e` (2,741,445 bytes; it was `70796e01...b785` before the D-1 bus fix, decision D80); an unpatched build of the same source with
    the same recipe gives `943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe`. A different toolchain may produce a
    different hash legitimately: the build then says "no verified hash" and still checks everything else.
 

@@ -182,8 +182,9 @@ export function runFaultScenario(engine, pkg, config = {}) {
     const described = { op: outcome.provenance.op, bytes: outcome.bytes.length, unknown: outcome.unknown.reduce((n, u) => n + u, 0), hash: sha(outcome.bytes), provenance: { synthetic: outcome.provenance.synthetic, disclaimer: outcome.provenance.disclaimer } };
     let w;
     try { w = watch(next, { seconds: cfg.rebootMs / 1000, inputs }); } catch (e) {
-      // The ENGINE trapped (a Rust panic in the emulator, not a CPU halt of the emulated firmware): e.g. an all-zero flash makes `Soc::read32_slow` index out of bounds, in the shipped
-      // engine too (docs/dev/FAULT-INJECTION.md section 14). Reported as its own verdict; the instance is dead, so nothing is read from it afterwards.
+      // The ENGINE trapped (a Rust panic in the emulator, not a CPU halt of the emulated firmware). D-1 (an all-zero flash or a word access at a RAM region's edge aborting the emulator) is fixed in the
+      // chip-profile engine, so nothing known traps there now; the verdict stays, so any future engine abort is never reported as a firmware result or a CPU halt (docs/dev/FAULT-INJECTION.md section 14).
+      // The instance is dead, so nothing is read from it afterwards.
       if (!(e instanceof WebAssembly.RuntimeError)) throw e;
       report.reboot = { policy: cfg.policy, synthetic: true, outcome: described, verdict: "engine-trap", trap: String(e.message).slice(0, 60), haltedAtMs: null, powerCutAtMs: null, emulatedMs: null, flashChangesByFirmware: null,
         lcdHash: null, lcdColours: null, indeterminateCarriedIn: ranges, indeterminateAtEnd: null, indeterminateReads: null, flashHash: null, state: null };

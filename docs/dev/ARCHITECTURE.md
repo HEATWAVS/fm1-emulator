@@ -60,7 +60,7 @@ engine fm1_fault_* exports (Rust: chip journal + indeterminate list, SoC event, 
   -> Fm1Machine (status: running | halted | power_cut; run() stops at once; powerCycle({ outcome }))  -> monitor.mjs watch(): verdict power-cut
   -> faultscenario.mjs runFaultScenario(): deterministic JSON report            faultpolicy.mjs: explicit synthetic outcomes (never in the engine)
 ```
-- **Survey (Stage 5E):** `faultsurvey.mjs` plans, shards and summarises scenarios over the firmware survey's 17 firmware and both chip profiles; harness-issued cycles (`inject`) cover the kinds no firmware issues; results: `docs/dev/fault-survey.json`, `FAULT-SURVEY.md`. An emulator trap (a Rust panic in the engine, e.g. on an all-zero flash) is the verdict `engine-trap`, not a firmware result.
+- **Survey (Stage 5E):** `faultsurvey.mjs` plans, shards and summarises scenarios over the firmware survey's 17 firmware and both chip profiles; harness-issued cycles (`inject`) cover the kinds no firmware issues; results: `docs/dev/fault-survey.json`, `FAULT-SURVEY.md`. An emulator trap (a Rust panic in the engine) is the verdict `engine-trap`, not a firmware result; the known one (D-1: an all-zero flash, or a 32-bit access at the edge of RAM) is fixed in the chip-profile engine (the patch also carries the SoC bus word-access fix, D80) and still present in the shipped one.
 - Three stop states stay distinct everywhere (`fm1_halted` vs `fm1_power_cut`); the indeterminate list lives in the engine only and is carried into a rebooted machine by `fm1_fault_set_ranges`.
 - The engine records interruption, affected range and indeterminate state; any outcome is an explicit named policy applied by the caller at the reboot (docs/dev/FAULT-INJECTION.md section 13).
 

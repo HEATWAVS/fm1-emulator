@@ -3,13 +3,14 @@
 // Quick tier (no engine): the plan (units, replay selection, tallies, tables) over synthetic rows, the harness-issued scenario configuration, and invariants of the committed results
 // file docs/dev/fault-survey.json (if it is there): every row internally consistent, the replay identical, no row claiming anything about a physical chip.
 // Full tier (needs the chip-profile engine; SKIPPED without it): harness-issued scenarios of every cycle kind are exact, deterministic and replayable; the ordinary-fault control is a
-// halt and never a power cut; and the KNOWN pre-existing engine defect that an all-zero flash makes the emulator trap is pinned (and reported as its own verdict, not a firmware result).
+// halt and never a power cut; and the former engine defect D-1 (an all-zero flash, or a word access at the edge of a RAM region, aborted the emulator) is pinned as fixed in the chip engine and still present in the shipped one; a halt and an engine trap stay distinct verdicts.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Fm1Machine, corruptedSectors } from "./machine.mjs";
 import { CONFIG, unitList, summarize, summaryMarkdown, replaySelection, annotateAgainstOld, rowOf, SURVEY_VERSION } from "./faultsurvey.mjs";
-import { DEFAULT_SET } from "./firmware-survey.mjs";
+import { DEFAULT_SET, catalogPackage } from "./firmware-survey.mjs";
+import { watch } from "./monitor.mjs";
 import { runFaultScenario, normalizeScenario, INJECT_KINDS } from "./faultscenario.mjs";
 import { FaultHarnessError } from "./fault.mjs";
 import { DISCLAIMER } from "./faultpolicy.mjs";
@@ -184,18 +185,70 @@ export function registerFaultSurveyLiveTests(testChip, { chipEngine, shipped, pk
     assert.deepEqual([m.halted, m.powerCut, m.status], [true, false, "halted"]);
   });
 
-  T("KNOWN PRE-EXISTING ENGINE DEFECT: an all-zero flash makes the emulator trap (a Rust panic in Soc::read32_slow), in the shipped engine too; a scenario reports it as the verdict `engine-trap`, never as a firmware result", () => {
-    const zero = []; for (let a = 0; a < 1 << 20; a += 4096) zero.push({ at: a, data: new Uint8Array(4096) });
-    for (const [name, eng] of [["shipped", shipped], ["chip engine", chipEngine]]) {
-      const m = Fm1Machine.boot(eng, quadro, { usb: false, sectors: zero });
-      assert.throws(() => m.run(3000), (e) => e instanceof WebAssembly.RuntimeError, `${name} traps on an all-zero flash (not a CPU halt)`);
+  // D-1 (found by 5E, fixed in the chip-profile engine): the emulator used to abort (a Rust panic, a WebAssembly `unreachable`) instead of letting the emulated CPU fault or run on. Two causes, both in the SoC
+  // bus's word access; neither is about flash contents. (1) the fast-path bound `o + 4 <= len` wrapped on wasm32 (32-bit usize) for the four addresses just below RAM and just below the XIP window;
+  // (2) a 32-bit access starting in the last three bytes of RAM, the overlay or SRAM2 indexed past the end. The SHIPPED engine is never changed and still has both.
+  const zeroFlash = () => { const z = []; for (let a = 0; a < 1 << 20; a += 4096) z.push({ at: a, data: new Uint8Array(4096) }); return z; };
+
+  T("D-1 cause: a 32-bit read just below RAM or the XIP window, or running off the end of RAM, the overlay or SRAM2, reads 0 and does not abort the emulator", () => {
+    const m = Fm1Machine.boot(chipEngine, quadro, { usb: false });
+    const bus = (a) => m.x.fm1_test_bus_read32(a) >>> 0;
+    for (const a of [0x01bffffc, 0x01bffffd, 0x01bffffe, 0x01bfffff, 0x01fffffc, 0x01ffffff, 0x01cffffe, 0x01cfffff, 0x01f3fffe, 0x0407fffe, 0x0407ffff]) {
+      assert.equal(bus(a), 0, `read32 at ${a.toString(16)}`);
     }
-    // reached through the fault workflow: a chip erase interrupted late, rebooted with the explicit `zero` outcome
-    const r = runFaultScenario(chipEngine, quadro, harness("chip-erase", { fraction: 0.999 }, { kind: "zero" }, { rebootMs: 2000 }));
-    assert.equal(r.stop.outcome, "power-cut");
-    assert.equal(r.reboot.verdict, "engine-trap");
-    assert.match(r.reboot.trap, /unreachable/);
-    assert.equal(r.reboot.synthetic, true);
-    assert.equal(r.reboot.haltedAtMs, null, "an engine trap is not a CPU halt");
+    assert.equal(bus(0x01cffffc), 0, "the last whole word of RAM is read as before");
+    // writes: dropped just below RAM and the XIP window; clipped at the end of RAM and of the overlay (the bytes inside are kept, the bytes past the end are not)
+    const put = (a, v) => m.x.fm1_test_bus_write32(a, v);
+    for (const a of [0x01bffffc, 0x01bffffe, 0x01bfffff, 0x01fffffc, 0x01ffffff]) put(a, 0xffffffff);
+    assert.equal(bus(0x01c00000), 0, "the first word of RAM was not touched by writes below it");
+    for (const end of [0x01d00000, 0x04080000, 0x01f40000]) {
+      put(end - 4, 0x44332211);
+      assert.deepEqual([bus(end - 3), bus(end - 2), bus(end - 1)], [0x00443322, 0x00004433, 0x00000044], `a read over the end of ${end.toString(16)} pads with zero bytes, not with the last byte`);
+      put(end - 4, 0);
+      put(end - 2, 0xaabbccdd);
+      assert.equal(bus(end - 4), 0xccdd0000, `a write over the end of ${end.toString(16)} keeps the two bytes inside and drops the rest`);
+      put(end - 1, 0x112233ee);
+      assert.equal(bus(end - 4), 0xeedd0000, "a write that starts on the last byte keeps only that byte");
+    }
+    assert.ok(m.x.fm1_halted() === 0, "the machine was not harmed");
+  });
+
+  T("D-1: an all-zero flash no longer aborts the emulator (the CPU runs on through the zeros and halts only after about 20 emulated seconds at minutes of run time, so this runs 20 ms: the shipped engine traps within them); the unmodified shipped engine still traps", () => {
+    const old = Fm1Machine.boot(shipped, quadro, { usb: false, sectors: zeroFlash() });
+    assert.throws(() => old.run(20), (e) => e instanceof WebAssembly.RuntimeError, "the shipped engine (never modified) still traps");
+    const m = Fm1Machine.boot(chipEngine, quadro, { usb: false, sectors: zeroFlash() });
+    m.run(20);                                        // before the fix this aborted inside these 20 ms
+    assert.deepEqual([m.halted, m.powerCut], [false, false]);
+  });
+
+  T("D-1: the named reproductions, frasil and modelar with sector 0x4000 zeroed, run to an ordinary result in the chip engine (they trapped the emulator before)", () => {
+    const expected = { frasil: ["crashed", true], modelar: ["blank", false] };
+    for (const fw of ["frasil", "modelar"]) {
+      const p = catalogPackage(fw);
+      const m = Fm1Machine.boot(chipEngine, p, { usb: false, flashChip: "puya", sectors: corruptedSectors(chipEngine, p, ["zero:0x4000"], { usb: false }) });
+      const w = watch(m, { seconds: 4 });
+      assert.deepEqual([w.verdict, m.halted, m.powerCut], [expected[fw][0], expected[fw][1], false], fw);
+      const old = Fm1Machine.boot(shipped, p, { usb: false, sectors: corruptedSectors(shipped, p, ["zero:0x4000"], { usb: false }) });
+      assert.throws(() => watch(old, { seconds: 4 }), (e) => e instanceof WebAssembly.RuntimeError, `${fw}: the shipped engine still traps`);
+    }
+  });
+
+  T("a normal firmware crash stays distinguishable from an engine trap: a halt is the verdict `crashed` with a halt time, a trap is the verdict `engine-trap` with none", () => {
+    // a firmware that really crashes: frasil with sector 0x4000 zeroed halts at 3.4 emulated seconds (it trapped the emulator before D-1 was fixed)
+    const fr = catalogPackage("frasil");
+    const dead = Fm1Machine.boot(chipEngine, fr, { usb: false, flashChip: "puya", sectors: corruptedSectors(chipEngine, fr, ["zero:0x4000"], { usb: false }) });
+    const w = watch(dead, { seconds: 4 });
+    assert.equal(w.verdict, "crashed");
+    assert.ok(w.haltedAtMs > 0);
+    const crash = { reboot: { verdict: w.verdict } };
+    // an engine trap reaches the scenario report as its own verdict (the instance is made to abort the way a Rust panic does)
+    const run = Fm1Machine.prototype.run;
+    Fm1Machine.prototype.run = function (ms) { if (this.faultOutcome) throw new WebAssembly.RuntimeError("unreachable"); return run.call(this, ms); };
+    let trap;
+    try { trap = runFaultScenario(chipEngine, quadro, harness("erase4k", { fraction: 0.5 }, { kind: "old" }, { rebootMs: 1000 })); } finally { Fm1Machine.prototype.run = run; }
+    assert.equal(trap.reboot.verdict, "engine-trap");
+    assert.match(trap.reboot.trap, /unreachable/);
+    assert.equal(trap.reboot.haltedAtMs, null, "an engine trap is not a CPU halt");
+    assert.notEqual(trap.reboot.verdict, crash.reboot.verdict);
   });
 }

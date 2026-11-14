@@ -455,18 +455,18 @@ comparison that separates "the outcome mattered" from "the firmware does that an
 
 **Results in one paragraph** (details, caveats and the coverage table are in FAULT-SURVEY.md). All 3,365 triggers fired exactly at their requested cycle; 190 of 190 replayed rows had identical report hashes. The 7 firmware that write
 flash rebooted into a running state in all 645 firmware-issued scenarios under every outcome policy. Harness-issued: program, 4 KiB and 32 KiB erase rebooted in 17 of 17 firmware except two 32 KiB cases (`zero`, `bit-mix`); a 64 KiB
-erase blanked `cord` and `guru600` (and more under `zero`/`bit-mix`); a **chip erase halted all 17 firmware under every outcome except `old`, and trapped the emulator under `zero` and `random` seed 2**. The two chip profiles gave the
+erase blanked `cord` and `guru600` (and more under `zero`/`bit-mix`); a **chip erase halted all 17 firmware under every outcome except `old`** (under `zero` and `random` seed 2 the first run trapped the emulator, D-1, and halted them once that was fixed). The two chip profiles gave the
 same picture. These are observations of the emulator under named synthetic inputs.
 
-**Finding D-1 (pre-existing engine defect, reported, not fixed).** An all-zero flash (and `random` seed 2 over the whole flash) makes the emulator itself trap (`unreachable`, a Rust panic in `Soc::read32_slow` at a bounds check) in the
-**shipped** engine and in the chip-profile engine; it is reachable without fault injection (the harness `sectors` option, or the survey's `zero:0x4000` control on `frasil` and `modelar`). Likely cause, not isolated by a minimal reproduction:
-`Ram::read32` indexes without a bounds check. The harness reports the trap as its own reboot verdict `engine-trap` (never a firmware result or a CPU halt). **Fixing it would change the emulation of the CPU's memory map in the
-engine (the shipped engine included): a separate decision, not taken here.**
+**Finding D-1 (pre-existing emulator defect; fixed in the chip-profile engine after 5E, the shipped engine still has it).** The emulator itself aborted (`unreachable`, a Rust panic) with an all-zero flash, `random` seed 2 over the whole flash, and the survey's
+`zero:0x4000` control on `frasil` and `modelar`. Two causes in the SoC bus's 32-bit access (see FAULT-SURVEY.md D-1 and decision D80): the wasm32 wrap of the fast-path bound `o + 4 <= len` for the addresses just below RAM and the XIP window, and a word access starting in
+the last three bytes of RAM, the overlay or SRAM2. Fixed by a wrap-free bound and by clipping such a word (missing bytes read 0, a write drops them); nothing about flash or the policies changed. The harness keeps its reboot verdict `engine-trap` for any future abort, distinct from a halt.
 
-**Verification (2026-11-14).** Rust: all host tests pass (fm1-soc lib 94, fm1-web 9, oracle replay 4 with the register driver and the chip driver, 688 scenarios, 3,220 fault steps, 0 mismatches); the engine is unchanged (`70796e01...b785`,
-73 exports, pin consistent). JS: full tier **274/274** (319 s; 263 + 7 quick + 4 live survey tests), quick tier **172/172**, `npm test` PASS. Mutation controls, all five suites re-run unchanged on the final tree: JS model 39/39, Rust chip 41/41,
-SoC integration 26/26, exports 25/27 (the two documented `fm1_render` syncs), harness 31/31; and a new one for the 5E code (harness-issued timing, injected data, trap reporting, the `old` bound, the replay selection, tallies): 12/12.
-Disabled behaviour: the 17-firmware x 3-scenario lockstep of the shipped engine against this engine with no profile: **51 of 51 exact, 3,281 checkpoints, 638 s**.
+**Verification (2026-11-14, after the D-1 fix).** Rust: all host tests pass (fm1-soc lib 95, fm1-web 9, oracle replay 4 with the register driver and the chip driver, 688 scenarios, 3,220 fault steps, 0 mismatches); the engine changed only by the D-1 fix
+(artifact `28dacdb4...764e`, 2,741,445 bytes, 73 exports, patch `26bd0c81...7115f`, tables unchanged, rebuild reproduces the hash). JS: full tier **277/277** (384 s; 263 + 7 quick + 7 live survey tests), quick tier **172/172**, `npm test` PASS.
+Mutation controls, all five suites re-run on the final tree: JS model 39/39, Rust chip 41/41, SoC integration 26/26, exports 25/27 (the two documented `fm1_render` syncs), harness 31/31; survey code 12/12; and a new wasm-level suite for the D-1 fix: **11/12** (the survivor is the
+`write16` bound, reachable only by a CPU halfword store at `0x01bffffe`; the same one-line rule as the other three bounds, covered by review and not by a test: the test bus has no 16-bit write). The whole survey was re-run on the fixed engine (6,551 s): 3,297 of 3,365 rows and all other controls
+identical to the first run, the 72 trapping rows now ordinary results, 190 of 190 replayed rows identical. Disabled behaviour: the 17-firmware x 3-scenario lockstep of the shipped engine against this engine with no profile: **51 of 51 exact, 3,281 checkpoints, 679 s**.
 
 **Limitations (see FAULT-SURVEY.md for the full list).** Fixed matrix, not exhaustive; 8 s input script; typical timing only; two chip profiles; the legacy model cannot be interrupted; harness-issued cycles run with the CPU stopped and write a
 labelled test input (0x00); no firmware-issued block or chip erase exists in the window; outcome policies beyond `old`/`new`/`ff` are exercised at one interruption point; the boot area, USB, the update loader and the maximum-timing profile are

@@ -1,5 +1,5 @@
 diff --git a/crates/fm1-soc/src/lib.rs b/crates/fm1-soc/src/lib.rs
-index b342349..6c2560a 100644
+index b342349..c926a06 100644
 --- a/crates/fm1-soc/src/lib.rs
 +++ b/crates/fm1-soc/src/lib.rs
 @@ -35,12 +35,15 @@ pub mod periph;
@@ -106,7 +106,110 @@ index b342349..6c2560a 100644
          if due.usb_frame {
              let pullup = self.sfr_get(usb::USB_IO_CON0) & 0x40 != 0;
              let mut u = std::mem::take(&mut self.usb);
-@@ -960,7 +1023,9 @@ impl Soc {
+@@ -763,11 +826,13 @@ impl Bus for Soc {
+     #[inline(always)]
+     fn read32(&mut self, addr: u32) -> u32 {
+         let o = addr.wrapping_sub(RAM_BASE) as usize;
+-        if o + 4 <= self.ram.len() {
++        // (`o < len - 3`, not `o + 4 <= len`: on wasm32 `usize` is 32 bits, and for the four addresses below RAM
++        // (o = 0xFFFF_FFFC..) `o + 4` wrapped to 0..3 and sent the access past the storage: a Rust panic)
++        if o < self.ram.len().saturating_sub(3) {
+             return self.ram.read32(o as u32);
+         }
+         let x = addr.wrapping_sub(XIP_BASE) as usize;
+-        if x + 4 <= self.xip.len() {
++        if x < self.xip.len().saturating_sub(3) {
+             return u32::from_le_bytes([self.xip[x], self.xip[x + 1], self.xip[x + 2], self.xip[x + 3]]);
+         }
+         self.read32_slow(addr)
+@@ -786,7 +851,7 @@ impl Bus for Soc {
+     fn write16(&mut self, addr: u32, value: u16) {
+         // merged at (addr & 2) within the aligned word, as the slow path does
+         let o = (addr & !1).wrapping_sub(RAM_BASE) as usize;
+-        if o + 2 <= self.ram.len() && addr & 1 == 0 {
++        if o < self.ram.len().saturating_sub(1) && addr & 1 == 0 {
+             return self.ram.write16(o as u32, value);
+         }
+         self.write16_slow(addr, value)
+@@ -795,13 +860,44 @@ impl Bus for Soc {
+     #[inline(always)]
+     fn write32(&mut self, addr: u32, value: u32) {
+         let o = addr.wrapping_sub(RAM_BASE) as usize;
+-        if o + 4 <= self.ram.len() {
++        if o < self.ram.len().saturating_sub(3) {
+             return self.ram.write32(o as u32, value);
+         }
+         self.write32_slow(addr, value)
+     }
+ }
+ 
++/// A 32-bit read that starts inside a RAM region (RAM, the overlay, SRAM2) and reaches past its end
++/// (an unaligned word in the last three bytes, e.g. a CPU fetch window that runs off the end of the
++/// overlay). The bytes past the end are outside the region and read 0, as everywhere else past a
++/// region's end (the XIP window below, an unmapped address). It used to index past the end of the
++/// region's storage and abort the whole emulator (a Rust panic, a WebAssembly `unreachable`) instead
++/// of letting the emulated CPU go on and fault or run on.
++fn ram_read32_clipped(ram: &Ram, o: u32) -> u32 {
++    let n = ram.len();
++    let o = o as usize;
++    if o + 4 <= n {
++        return ram.read32(o as u32);
++    }
++    let g = |i: usize| if i < n { ram.read8(i as u32) } else { 0 };
++    u32::from_le_bytes([g(o), g(o + 1), g(o + 2), g(o + 3)])
++}
++
++/// The write counterpart: the bytes inside the region are stored, the bytes past its end are dropped
++/// (as a write to an unmapped address is).
++fn ram_write32_clipped(ram: &mut Ram, o: u32, value: u32) {
++    let n = ram.len();
++    let o = o as usize;
++    if o + 4 <= n {
++        return ram.write32(o as u32, value);
++    }
++    for (i, b) in value.to_le_bytes().into_iter().enumerate() {
++        if o + i < n {
++            ram.write8((o + i) as u32, b);
++        }
++    }
++}
++
+ impl Soc {
+     #[inline(never)]
+     fn read32_slow(&mut self, addr: u32) -> u32 {
+@@ -811,15 +907,15 @@ impl Soc {
+                 let g = |i: usize| self.xip.get(i).copied().unwrap_or(0);
+                 u32::from_le_bytes([g(o), g(o + 1), g(o + 2), g(o + 3)])
+             }
+-            Region::Ram => self.ram.read32(addr - RAM_BASE),
++            Region::Ram => ram_read32_clipped(&self.ram, addr - RAM_BASE),
+             Region::Sfcenc => self.sfr_get(addr),
+             Region::XipFlash => {
+                 let o = (addr - XIP_BASE) as usize + XIP_FLASH_OFFSET;
+                 let g = |i: usize| self.flash.mem.get(i).copied().unwrap_or(0xff);
+                 u32::from_le_bytes([g(o), g(o + 1), g(o + 2), g(o + 3)])
+             }
+-            Region::Ovl => self.ovl.read32(addr - OVL_BASE),
+-            Region::Sram2 => self.sram2.read32(addr - SRAM2_BASE),
++            Region::Ovl => ram_read32_clipped(&self.ovl, addr - OVL_BASE),
++            Region::Sram2 => ram_read32_clipped(&self.sram2, addr - SRAM2_BASE),
+             Region::Irqc => {
+                 // 0x1eee008 bit 14: controller ready (the early init spins on it);
+                 // 0x1eee000 / 0x1eee004 (C0_CON / C1_CON): see `core_paused`
+@@ -927,9 +1023,9 @@ impl Soc {
+     fn write32_slow(&mut self, addr: u32, value: u32) {
+         match self.region(addr) {
+             Region::Xip | Region::XipFlash => self.log_unknown(addr, 4, true, value), // flash writes go via the ROM
+-            Region::Ram => self.ram.write32(addr - RAM_BASE, value),
+-            Region::Ovl => self.ovl.write32(addr - OVL_BASE, value),
+-            Region::Sram2 => self.sram2.write32(addr - SRAM2_BASE, value),
++            Region::Ram => ram_write32_clipped(&mut self.ram, addr - RAM_BASE, value),
++            Region::Ovl => ram_write32_clipped(&mut self.ovl, addr - OVL_BASE, value),
++            Region::Sram2 => ram_write32_clipped(&mut self.sram2, addr - SRAM2_BASE, value),
+             Region::Irqc => {
+                 if addr == 0x1eee000 || addr == 0x1eee004 {
+                     // C0_CON / C1_CON: writing bit 2 pauses that core (bit 4 reads "paused");
+@@ -960,7 +1056,9 @@ impl Soc {
                  // PD0 drives the flash chip select; PA1/PA3/PA4 clock the
                  // key-matrix shift registers
                  if addr == 0x500c0 {
@@ -116,7 +219,7 @@ index b342349..6c2560a 100644
                      self.sync_xip();
                  }
                  self.periph.write(addr, value);
-@@ -972,7 +1037,9 @@ impl Soc {
+@@ -972,7 +1070,9 @@ impl Soc {
                  }
              }
              Region::Spi0 => {
@@ -126,6 +229,46 @@ index b342349..6c2560a 100644
                  self.sync_xip();
              }
              Region::Iomap => self.sfr_set(addr, value),
+@@ -1169,6 +1269,39 @@ mod tests {
+         }
+     }
+ 
++    /// D-1 (5E): an unaligned 32-bit access in the last three bytes of a RAM region used to index past
++    /// the end of its storage and abort the emulator; the bytes past the end now read 0 and are
++    /// dropped on a write, and nothing else moves.
++    #[test]
++    fn a_word_access_that_runs_off_the_end_of_a_ram_region_is_clipped() {
++        let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
++        for (name, base, len) in [("ram", RAM_BASE, soc.ram.len()), ("ovl", OVL_BASE, soc.ovl.len()), ("sram2", SRAM2_BASE, soc.sram2.len())] {
++            let end = base + len as u32;
++            for (i, b) in [0x11u8, 0x22, 0x33, 0x44].into_iter().enumerate() {
++                soc.write8(end - 4 + i as u32, b);
++            }
++            assert_eq!(soc.read32(end - 4), 0x4433_2211, "{name}: the last whole word");
++            assert_eq!(soc.read32(end - 3), 0x0044_3322, "{name}: one byte past the end reads 0");
++            assert_eq!(soc.read32(end - 2), 0x0000_4433, "{name}: two bytes past");
++            assert_eq!(soc.read32(end - 1), 0x0000_0044, "{name}: three bytes past");
++            assert_eq!(soc.read16(end - 2), 0x4433, "{name}: a halfword in the last word is as before");
++            soc.write32(end - 2, 0xaabb_ccdd);
++            assert_eq!(soc.read32(end - 4), 0xccdd_2211, "{name}: the bytes inside are stored, the rest dropped");
++            soc.write32(end - 1, 0x1122_33ee);
++            assert_eq!(soc.read32(end - 4), 0xeedd_2211, "{name}: only the last byte changed");
++        }
++        // just below RAM and just below the XIP window (the addresses whose offsets wrap to 0xFFFF_FFFC.. and made the
++        // fast-path bound `o + 4 <= len` wrap on wasm32): unmapped, so they read 0 and a write goes nowhere
++        for base in [RAM_BASE, XIP_BASE] {
++            for back in 1..=4u32 {
++                assert_eq!(soc.read32(base - back), 0, "{:#x}", base - back);
++                soc.write32(base - back, 0xffff_ffff);
++                soc.write16(base - back, 0xffff);
++            }
++        }
++        assert_eq!(soc.read32(RAM_BASE), 0, "RAM itself was not touched");
++    }
++
+     #[test]
+     fn region_by_table_matches_the_chain() {
+         let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
 diff --git a/crates/fm1-soc/src/machine.rs b/crates/fm1-soc/src/machine.rs
 index b021ae0..a518816 100644
 --- a/crates/fm1-soc/src/machine.rs
