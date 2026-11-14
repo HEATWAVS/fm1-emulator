@@ -29,7 +29,7 @@ const NEITHER = [                                                               
   "fm1_flash_busy", "fm1_flash_chip", "fm1_flash_len", "fm1_flash_nv_restore", "fm1_flash_restore", "fm1_flash_revision", "fm1_flash_timing", "fm1_flash_uid_clear", "fm1_flash_uid_set",
   "fm1_halted", "fm1_idle_ms", "fm1_jit", "fm1_lcd", "fm1_lcd_revision", "fm1_leds", "fm1_load_syx", "fm1_midi", "fm1_minsns", "fm1_ms", "fm1_out_l", "fm1_out_r", "fm1_pads",
   "fm1_pot", "fm1_profile", "fm1_profile_report", "fm1_test_set_wp", "fm1_velocity", "fm1_xip_len", "fm1_key",
-  "fm1_fault_enable", "fm1_fault_disarm", "fm1_cycles", "panel_board", "panel_draw", "panel_enc_id", "panel_height", "panel_hit", "panel_hit_y", "panel_lcd", "panel_leds", "panel_set", "panel_slide", "panel_width",
+  "fm1_fault_enable", "fm1_fault_disarm", "fm1_fault_set_ranges", "fm1_cycles", "panel_board", "panel_draw", "panel_enc_id", "panel_height", "panel_hit", "panel_hit_y", "panel_lcd", "panel_leds", "panel_set", "panel_slide", "panel_width",
 ];
 
 export function registerFaultLiveTests(testChip, { chipEngine, pkg, quadro }) {
@@ -138,6 +138,39 @@ export function registerFaultLiveTests(testChip, { chipEngine, pkg, quadro }) {
         assert.equal(st(x, "seen"), 0, `and must not count it`);
       }
     }
+  });
+
+  T("fm1_fault_set_ranges (the carry-in of Stage 5D) replaces the list, validates, refuses while a cycle runs and never touches the array", () => {
+    const c = open("puya"), x = c.x;
+    const put = (pairs, extra = 0) => {
+      const b = new Uint8Array(pairs.length * 8 + extra), dv = new DataView(b.buffer);
+      pairs.forEach(([lo, hi], i) => { dv.setUint32(i * 8, lo, true); dv.setUint32(i * 8 + 4, hi, true); });
+      const p = x.fm1_alloc(b.length);
+      new Uint8Array(x.memory.buffer, p, b.length).set(b);
+      return [p, b.length];
+    };
+    const sum = () => c.mem().reduce((h, b) => (Math.imul(h ^ b, 0x01000193) >>> 0), 0x811c9dc5);
+    const h0 = sum();
+    assert.equal(x.fm1_fault_set_ranges(...put([[0x2000, 0x2fff], [0x10, 0x20], [0x21, 0x30]])), 0);
+    assert.deepEqual(ranges(x), [[0x10, 0x30], [0x2000, 0x2fff]], "sorted and merged, as any list");
+    assert.equal(sum(), h0, "the array is untouched");
+    assert.equal(st(x, "powerCut"), 0, "a carried list is not a cut");
+    c.tx([0x03, ...a3(0x2ffc)], 8);
+    assert.equal(st(x, "reads"), 1, "reads of carried bytes are counted like any others");
+    assert.equal(x.fm1_fault_set_ranges(...put([[5, 6]])), 0);
+    assert.deepEqual(ranges(x), [[5, 6]], "REPLACES the list");
+    assert.equal(x.fm1_fault_set_ranges(...put([[9, 8]])), 12, "reversed");
+    assert.equal(x.fm1_fault_set_ranges(...put([[0, 1 << 20]])), 12, "past the end of the array");
+    assert.equal(x.fm1_fault_set_ranges(...put([[0x100, 0x1ff]], 3)), 12, "a length that is not a multiple of 8");
+    assert.deepEqual(ranges(x), [[5, 6]], "refusals change nothing");
+    program(c, 0x4000);
+    assert.equal(x.fm1_fault_set_ranges(...put([[1, 2]])), 13, "not while a cycle is running");
+    assert.deepEqual(ranges(x), [[5, 6]]);
+    c.settle();
+    assert.equal(x.fm1_fault_set_ranges(...put([])), 0, "an empty list clears it");
+    assert.deepEqual(ranges(x), []);
+    const legacy = Fm1Machine.boot(chipEngine, pkg, { usb: false });
+    assert.equal(legacy.x.fm1_fault_set_ranges(...(() => { const p = legacy.x.fm1_alloc(8); return [p, 8]; })()), ERR.noChip);
   });
 
   T("a harness cut: refusals (no cycle, write-status, not journaled, already off, not off) and the record of a real one", () => {

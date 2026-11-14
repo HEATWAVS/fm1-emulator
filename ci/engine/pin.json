@@ -8,7 +8,7 @@
   },
   "patch": {
     "file": "chip-profiles.patch",
-    "sha256": "9d1b15e6962a0bbe36210c2547e4c9062154ac891dd54c934b9a64bdb18f8231",
+    "sha256": "17fbb7bd8dd82fa5b6e29686fe12d306d083a4ec62c80ee6ee6e698853cfec1e",
     "note": "applies to the LF blobs of the pinned commit with core.autocrlf=false"
   },
   "generatedTablesSha256": "5d24d3674947d8ef5687f365bf79e89daa5fa8f8a50fdc5ccf4c0c6618142176",
@@ -61,8 +61,8 @@
     "rustc 1.97.1 (8bab26f4f 2026-07-14)": {
       "host": "x86_64-pc-windows-msvc",
       "unpatchedWasmSha256": "943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe",
-      "patchedWasmSha256": "d13b88d174163146359df8d03d1ba5a92226493a5206d79e694f8d928c74e9e2",
-      "patchedWasmBytes": 2745807
+      "patchedWasmSha256": "70796e015a26629017e9a7101eb142de2a7f322c0b8665f0a60d76289e65b785",
+      "patchedWasmBytes": 2747241
     }
   },
   "expectedExports": [
@@ -85,6 +85,7 @@
     "fm1_fault_record",
     "fm1_fault_record_range",
     "fm1_fault_restore",
+    "fm1_fault_set_ranges",
     "fm1_fault_state",
     "fm1_flash",
     "fm1_flash_base",
@@ -150,6 +151,7 @@
     "fm1_fault_record",
     "fm1_fault_record_range",
     "fm1_fault_restore",
+    "fm1_fault_set_ranges",
     "fm1_fault_state",
     "fm1_flash_chip",
     "fm1_flash_events",

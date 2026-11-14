@@ -80,6 +80,16 @@ which is chip-select), `machine.flashEvents()` counts commands the model ignored
   values are `invalid-uid`. `powerCycle()` keeps it for the same chip; a different chip swapped in while off has none. The legacy profile's 4Bh answer (the `FM1-` pattern) is unchanged.
 - Behaviour differences from the original model, the array-at-accept simplification and the known limitations: `ci/engine/README.md`.
 
+## Fault injection: flash power cuts (Component 5; needs a fault-injection chip-profile engine)
+`Fm1Machine.boot(engine, pkg, { flashChip: "puya", fault: { op: "any", nth: 1, at: { afterCycles: 5000 } } })` arms one single-shot power cut of the flash chip (ops: `program`, `erase4k`, `erase32k`, `erase64k`,
+`erase`, `chip-erase`, `any`; `at`: `atAccept: true` | `fraction` | `afterUs` | `afterCycles`, the exact form). The machine stops **at the cut cycle** and reports a **power cut, never a crash**:
+`machine.status` is `"running"`, `"halted"` (CPU fault) or `"power_cut"`; `run()` returns without rendering once either stop state is reached; `watch()` ends with verdict `power-cut`; the CLI takes
+`--fault JSON --flash-chip puya --expect power-cut`. `machine.faultState()` holds the engine's counters and **audit record** (accepted, requested and actual cut cycles, the bytes at risk, the images before and
+if completed), `machine.indeterminateRanges()` the bytes physically unknown, `machine.peekKnown(addr, len)` the flash with those marked unknown (`flash()` shows the raw array: a labelled placeholder there).
+**The engine never decides what an interrupted range holds.** `machine.powerCycle({ outcome: { kind: "ff" } })` reboots with an **explicit, named synthetic outcome** (faultpolicy.mjs: `old`, `new`, `ff`, `zero`, `random`/`bit-mix` with a
+seed, `prefix`); there is no default, the list of unknown bytes is carried unchanged, and the outcome is kept as `machine.faultOutcome`, labelled synthetic. `runFaultScenario(engine, pkg, config)`
+(faultscenario.mjs) runs a scenario to a deterministic JSON report (`reportSha256`). Details and limits: docs/dev/FAULT-INJECTION.md sections 12 and 13.
+
 ## Flash-chip reference model (datasheet oracle)
 
 `chipspec.mjs` + `chipmodel.mjs` model the Puya P25Q80H (documented reference profile; the physical older chip's
@@ -100,6 +110,7 @@ Research, sources and the list of ambiguities: `docs/dev/FLASH-CHIPS.md`.
 | `monitor.mjs` | `watch()`: runs and judges: `booted` / `crashed` / `blank` / `display-lost` |
 | `cli.mjs` | Command line; JSON output with `--json` |
 | `selftest.mjs` | Checks the harness itself against bundled firmware (and runs the chip-model tests) |
+| `fault.mjs`, `faultscenario.mjs`, `faultpolicy.mjs` | fault-injection harness layer, scenario runner and the explicit synthetic outcome policies (Component 5) |
 | `chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs` | Flash-chip reference model and its 129 conformance tests |
 
 Flash files (`--flash`, `--save-flash`) use the same record format the app saves: per 4 KiB sector,
@@ -137,8 +148,8 @@ code sector halts the CPU (see `selftest.mjs`).
 | Command | What runs | Time |
 |---|---|---|
 | `npm test` | the existing suite **plus the quick tier**, which has a 20 s hard limit (`ci/verify.mjs`) | ~13 s |
-| `npm run test:machine:quick` | quick tier alone (159 tests: 30 harness incl. one real Felucca boot + 129 chip-model) | ~12 s |
-| `npm run test:machine` | full tier: every test (242 = 113 harness + 129 chip-model), including the slower firmware-behaviour checks. 70 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests + 10 fault-injection live tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 172 run | ~90 s (~240 s with the chip engine) |
+| `npm run test:machine:quick` | quick tier alone (165 tests: 36 harness incl. one real Felucca boot + 129 chip-model) | ~12 s |
+| `npm run test:machine` | full tier: every test (263 = 134 harness + 129 chip-model), including the slower firmware-behaviour checks. 85 of them need the chip-profile engine (5 chip-engine checks + 51 live chip conformance tests + 4 firmware tests + 11 fault-injection live tests + 14 fault harness live tests) and are reported **SKIPPED** (not passed) when `ci/engine/out/` has none: 172 run | ~90 s (~240 s with the chip engine) |
 | `node ci/machine/selftest.mjs --filter "chip live"` | only the live chip conformance tests (needs the chip engine) | ~9 s |
 
 A test is quick if it is declared `test.quick(...)` in `selftest.mjs`; the full tier runs all tests, so the

@@ -32,6 +32,7 @@ import { registerFaultRegressionTests } from "./faulttests.mjs";
 import { registerLiveChipTests } from "./chiplivetests.mjs";
 import { registerFirmwareTests } from "./firmwaretests.mjs";
 import { registerFaultLiveTests } from "./faultlivetests.mjs";
+import { registerFaultHarnessQuickTests, registerFaultHarnessLiveTests } from "./faultharnesstests.mjs";
 import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions, parseFlashUid, uidWords } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
@@ -528,7 +529,7 @@ test.quick("chip engine pin: the patch and the tables generated from chipspec.mj
   assert.equal(sha(readFileSync(resolve(import.meta.dirname, "../engine", PIN.patch.file))), PIN.patch.sha256, "ci/engine/chip-profiles.patch changed: update pin.json deliberately");
   assert.equal(sha(renderTables()), PIN.generatedTablesSha256, "chipspec.mjs changed: rebuild the engine (node ci/engine/build.mjs --test) and update pin.json");
   assert.equal(PIN.upstream.commit, "631b790b191e87ea8b796d351cfe7e61ab366794");
-  assert.equal(PIN.expectedExports.length, 72);   // the 48 of an unpatched v0.3.0 build, 12 chip/test exports (Stage C), 12 fault-injection exports (Component 5)
+  assert.equal(PIN.expectedExports.length, 73);   // the 48 of an unpatched v0.3.0 build, 12 chip/test exports (Stage C), 13 fault-injection exports (Component 5: 12 in 5C-3, fm1_fault_set_ranges in 5D)
   for (const n of PIN.addedExports) assert.ok(PIN.expectedExports.includes(n), n);
   assert.ok(!engine.exportNames.has("fm1_flash_chip"), "the shipped engine was not replaced");
 });
@@ -613,7 +614,9 @@ test.chip("flash chip (live): a power cycle keeps the profile; options are still
 
 registerLiveChipTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // live chip conformance (Stage C3), full tier, needs the chip engine
 registerFirmwareTests(test.chip, { chipEngine, catalogPkg });
-registerFaultLiveTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // fault-injection exports and clock syncs (Component 5, Stage 5C-3), full tier, needs the chip engine   // firmware behaviour under the profiles (Stage C4), full tier, needs the chip engine
+registerFaultHarnessQuickTests(test.quick);   // the fault-injection harness API, pure logic over a stand-in engine (Component 5, Stage 5D)
+registerFaultLiveTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // fault-injection exports and clock syncs (Component 5, Stage 5C-3), full tier, needs the chip engine
+registerFaultHarnessLiveTests(test.chip, { chipEngine, shipped: engine, pkg: FELUCCA, quadro: QUADRO });   // the harness API over real firmware (Stage 5D), full tier, needs the chip engine   // firmware behaviour under the profiles (Stage C4), full tier, needs the chip engine
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance, incl. fault injection), quick tier
 registerFaultRegressionTests(test, { genPath: resolve(import.meta.dirname, "../engine/gen-transcripts.mjs") });   // full tier: transcripts unchanged with faults disabled
 

@@ -3,6 +3,7 @@
 // Verdicts (what the machine can show from the outside):
 //   booted        still running at the end, and the screen shows real content (>= minColours)
 //   crashed       the emulated CPU halted: it hit something it cannot execute (a firmware fault)
+//   power-cut     the flash chip lost power in a fault-injection cut (Component 5) and the machine with it: NOT a crash, the CPU never faulted
 //   blank         running, but the screen never showed content
 //   display-lost  the screen showed content, then went blank
 //
@@ -10,7 +11,7 @@
 // healthy, and from the outside it looks the same as one stuck in a loop. Telling them apart
 // needs a stimulus (press something, expect a change) and a firmware-specific expectation.
 // `activity` reports what moved so a test can make that call for its own firmware.
-export const VERDICTS = ["booted", "crashed", "blank", "display-lost"];
+export const VERDICTS = ["booted", "crashed", "power-cut", "blank", "display-lost"];
 
 /**
  * Run `machine` for `seconds` of emulated time, sampling every `sampleMs`, and judge it.
@@ -23,19 +24,22 @@ export function watch(machine, { seconds = 3, sampleMs = 100, minColours = 2 } =
   for (let i = 0; i < steps; i++) {
     machine.run(sampleMs);
     samples.push(machine.observe());
-    if (machine.halted) break;
+    if (machine.halted || machine.powerCut) break;       // a CPU halt and a power cut each end the run (and stay distinct)
   }
   const last = samples[samples.length - 1];
   const crashedAt = samples.find((s) => s.halted);
+  const powerCutAt = samples.find((s) => s.powerCut);
   const maxColours = Math.max(...samples.map((s) => s.lcdColours));
   let verdict = "booted";
   if (crashedAt) verdict = "crashed";
+  else if (powerCutAt) verdict = "power-cut";            // the flash chip lost power in a cut: not a crash (the CPU never faulted)
   else if (maxColours < minColours) verdict = "blank";
   else if (last.lcdColours < minColours) verdict = "display-lost";
 
   return {
     verdict,
     haltedAtMs: crashedAt ? crashedAt.emulatedMs : null,
+    ...(powerCutAt ? { powerCutAtMs: powerCutAt.emulatedMs } : {}),   // present only after a cut, so every other report keeps its shape
     emulatedMs: last.emulatedMs,
     final: last,
     activity: {

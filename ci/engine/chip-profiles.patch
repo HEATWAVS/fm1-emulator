@@ -732,10 +732,10 @@ index 004a507..c5c64cb 100644
              if self.uart.con0 & 1 != 0 {
 diff --git a/crates/fm1-soc/src/spichip.rs b/crates/fm1-soc/src/spichip.rs
 new file mode 100644
-index 0000000..060212f
+index 0000000..4fdd1f0
 --- /dev/null
 +++ b/crates/fm1-soc/src/spichip.rs
-@@ -0,0 +1,2197 @@
+@@ -0,0 +1,2252 @@
 +//! Datasheet-based SPI NOR chip state machine (HEATWAVS Stage C1), used by `SpiFlash` when a
 +//! chip profile is selected. The default (no profile) is the original instantaneous model.
 +//!
@@ -958,6 +958,10 @@ index 0000000..060212f
 +    OutOfScope,
 +    /// the running cycle was accepted before fault injection was enabled, so nothing was journaled for it
 +    NotEnabled,
++    /// an indeterminate range outside the array or with its first address after its last
++    BadRange,
++    /// the indeterminate list can only be set while no cycle is running
++    CycleInFlight,
 +}
 +
 +impl FaultError {
@@ -972,6 +976,8 @@ index 0000000..060212f
 +            FaultError::NotOff => "fault.not-off",
 +            FaultError::OutOfScope => "fault.out-of-scope",
 +            FaultError::NotEnabled => "fault.not-enabled",
++            FaultError::BadRange => "fault.bad-range",
++            FaultError::CycleInFlight => "fault.cycle-in-flight",
 +        }
 +    }
 +}
@@ -1268,6 +1274,24 @@ index 0000000..060212f
 +            completed: f.completed,
 +            interrupted: f.interrupted,
 +        }
++    }
++
++    /// Carry the indeterminate list into a chip that has just been powered on (Stage 5D: a machine rebooted after a cut keeps the bytes the cut left unknown). REPLACES the list;
++    /// the ranges are inclusive and are normalised like any other (sorted, adjacent ones merged). Nothing about the array changes: the list says which bytes are physically unknown,
++    /// never what they hold. Refused (and nothing changed) for a range outside the array or reversed, and while a cycle is running.
++    pub fn set_indeterminate(&mut self, ranges: &[(usize, usize)]) -> Result<(), FaultError> {
++        self.settle();
++        if self.busy.is_some() {
++            return Err(FaultError::CycleInFlight);
++        }
++        if ranges.iter().any(|&(lo, hi)| lo > hi || hi >= BYTES) {
++            return Err(FaultError::BadRange);
++        }
++        self.fault.indet.clear();
++        for &(lo, hi) in ranges {
++            self.add_indet(lo, hi);
++        }
++        Ok(())
 +    }
 +
 +    /// The cycle at which the running cycle's scheduled cut is due (its REQUESTED deadline), if one is scheduled. Cleared once the cut fires or the cycle ends.
@@ -2907,6 +2931,37 @@ index 0000000..060212f
 +        assert!(!r.state().powered_off && r.c.indeterminate().is_empty());
 +    }
 +
++    /// Carrying the indeterminate list into a rebooted chip: validated, normalised like any other list, never touching the array, and counted on read like a list that came from a cut.
++    #[test]
++    fn the_indeterminate_list_can_be_carried_into_a_fresh_chip() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        assert_eq!(r.c.set_indeterminate(&[(0x2000, 0x2fff), (0x10, 0x20), (0x21, 0x30), (0x2000, 0x2003)]), Ok(()));
++        assert_eq!(r.c.indeterminate(), &[(0x10, 0x30), (0x2000, 0x2fff)], "sorted, adjacent merged, duplicates absorbed");
++        let image = r.mem.clone();
++        r.clock(T0);
++        assert_eq!(r.read(0x0ff0, 16), (0x0ff0..0x1000).map(pat).collect::<Vec<u8>>());
++        assert_eq!(r.state().indeterminate_reads, 0, "known bytes are not counted");
++        r.read(0x2ffc, 8);
++        assert_eq!(r.state().indeterminate_reads, 1, "a read touching the carried range is counted");
++        assert_eq!(r.mem, image, "the array was never touched");
++        // a later complete erase clears carried bytes like any others
++        r.erase(0x20, 0x2000);
++        r.clock(T0 + 8_000 + 1000);
++        assert_eq!(r.state().indeterminate, vec![(0x10, 0x30)], "(state() settles: the erase has completed)");
++        // refusals change nothing
++        assert_eq!(r.c.set_indeterminate(&[(5, 4)]), Err(FaultError::BadRange));
++        assert_eq!(r.c.set_indeterminate(&[(0, BYTES)]), Err(FaultError::BadRange));
++        assert_eq!(r.c.indeterminate(), &[(0x10, 0x30)]);
++        r.clock(T0 + 20_000);
++        r.accept(FaultOp::Erase4k);
++        assert_eq!(r.c.set_indeterminate(&[]), Err(FaultError::CycleInFlight), "not while a cycle runs");
++        assert_eq!(r.c.indeterminate(), &[(0x10, 0x30)]);
++        // an empty list clears it
++        r.clock(T0 + 100_000);
++        assert_eq!(r.c.set_indeterminate(&[]), Ok(()));
++        assert!(r.c.indeterminate().is_empty());
++    }
++
 +    /// Determinism: the same flash, profile, timing, trigger and clock moves give identical records, lists and memory.
 +    #[test]
 +    fn identical_runs_give_identical_records_and_memory() {
@@ -3630,7 +3685,7 @@ index 0000000..a10f4e9
 +    }
 +}
 diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
-index fa2ab51..e2b32f0 100644
+index fa2ab51..c505c18 100644
 --- a/crates/fm1-web/src/lib.rs
 +++ b/crates/fm1-web/src/lib.rs
 @@ -33,6 +33,8 @@ struct Machine {
@@ -3711,7 +3766,7 @@ index fa2ab51..e2b32f0 100644
  }
  #[no_mangle]
  pub extern "C" fn fm1_xip_len() -> u32 { machine().map_or(0, |m| m.soc.xip.len() as u32) }
-@@ -263,6 +291,345 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
+@@ -263,6 +291,368 @@ pub extern "C" fn fm1_flash_len() -> u32 { fm1_soc::FLASH_SIZE as u32 }
  pub extern "C" fn fm1_flash_revision() -> u32 { machine().map_or(0, |m| m.soc.flash.revision) }
  #[no_mangle]
  pub extern "C" fn fm1_flash_busy() -> u32 { machine().is_some_and(|m| m.soc.flash.busy()) as u32 }
@@ -3838,7 +3893,7 @@ index fa2ab51..e2b32f0 100644
 +// Configure, trigger, restore and inspect a power cut of the flash chip (a chip profile is required: 10 = none). The engine records interruption, affected range and
 +// indeterminate state ONLY: no synthetic fill lives here, and the array bytes of an interrupted range are a labelled placeholder (the pre-image), never an outcome.
 +// Error codes: 0 ok, 1 bad nth, 2 bad trigger, 3 already armed, 4 chip is powered off (restore first), 5 no cycle in flight, 6 already off, 7 not off, 8 out of scope
-+// (write-status, page erase), 9 the running cycle was accepted before fault injection was enabled, 10 no chip profile, 11 bad argument.
++// (write-status, page erase), 9 the running cycle was accepted before fault injection was enabled, 10 no chip profile, 11 bad argument, 12 bad range, 13 a cycle is running.
 +fn fault_code(e: fm1_soc::spichip::FaultError) -> u32 {
 +    use fm1_soc::spichip::FaultError::*;
 +    match e {
@@ -3851,6 +3906,8 @@ index fa2ab51..e2b32f0 100644
 +        NotOff => 7,
 +        OutOfScope => 8,
 +        NotEnabled => 9,
++        BadRange => 12,
++        CycleInFlight => 13,
 +    }
 +}
 +const FAULT_NO_CHIP: u32 = 10;
@@ -4031,6 +4088,27 @@ index fa2ab51..e2b32f0 100644
 +    })
 +}
 +
++/// Carry the indeterminate list into a machine just booted (Stage 5D: the bytes an earlier power cut left physically unknown stay unknown after a reboot, and reads of them are
++/// counted). `ptr` is a buffer from `fm1_alloc` of `len` bytes holding `len / 8` ranges as two little-endian u32 each: first and last address, inclusive. REPLACES the list.
++/// Nothing about the array changes. Returns 0, 10 (no chip profile), 12 (a bad range: nothing changed) or 13 (a cycle is running).
++#[no_mangle]
++pub extern "C" fn fm1_fault_set_ranges(ptr: *mut u8, len: u32) -> u32 {
++    let bytes = unsafe { Vec::from_raw_parts(ptr, len as usize, len as usize) };
++    if len % 8 != 0 {
++        return 12;
++    }
++    let ranges: Vec<(usize, usize)> = bytes
++        .chunks_exact(8)
++        .map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()) as usize, u32::from_le_bytes(c[4..].try_into().unwrap()) as usize))
++        .collect();
++    machine().map_or(FAULT_NO_CHIP, |m| {
++        sync_cut(m);
++        let (cycles, hz) = (m.soc.periph.cycles, m.soc.periph.hz);
++        m.soc.flash.set_clock(cycles, hz); // the chip learns the time first: a cycle that has ended by now is not "running"
++        m.soc.flash.chip.as_mut().map_or(FAULT_NO_CHIP, |c| c.set_indeterminate(&ranges).map_or_else(fault_code, |_| 0))
++    })
++}
++
 +/// 1 if the machine lost power in a flash cut: a terminal state of its own, never reported by `fm1_halted` (a CPU fault).
 +#[no_mangle]
 +pub extern "C" fn fm1_power_cut() -> u32 {
@@ -4057,7 +4135,7 @@ index fa2ab51..e2b32f0 100644
  #[no_mangle]
  pub extern "C" fn fm1_flash_restore(ptr: *mut u8, len: u32) -> u32 {
      let bytes = unsafe { Vec::from_raw_parts(ptr, len as usize, len as usize) };
-@@ -334,6 +701,7 @@ pub extern "C" fn fm1_bench_script(ptr: *mut u8, len: u32) -> u32 {
+@@ -334,6 +724,7 @@ pub extern "C" fn fm1_bench_script(ptr: *mut u8, len: u32) -> u32 {
  #[no_mangle]
  pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
      let Some(m) = machine() else { return 0 };
@@ -4065,7 +4143,7 @@ index fa2ab51..e2b32f0 100644
      m.started = true;
      #[cfg(target_arch = "wasm32")]
      {
-@@ -346,7 +714,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
+@@ -346,7 +737,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
      m.pace.begin(frames, m.soc.periph.hz);
      // a cap below what the pace needs would drop out where running for the frames alone did not
      let max_insns = max_insns.max(m.pace.least(frames, m.soc.periph.hz, ahead).min(u32::MAX as u64) as u32);
@@ -4074,7 +4152,7 @@ index fa2ab51..e2b32f0 100644
          let (c0, h0) = (m.soc.periph.cycles, m.soc.periph.audio_halves);
          m.run(20_000);
          spent += 20_000;
-@@ -354,6 +722,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
+@@ -354,6 +745,7 @@ pub extern "C" fn fm1_render(frames: u32, max_insns: u32) -> u32 {
          m.audio.extend(m.soc.periph.audio.drain(..));
      }
      m.pace.end();
@@ -4082,7 +4160,7 @@ index fa2ab51..e2b32f0 100644
      unsafe { INSNS += spent as u64 };
      let have = (m.audio.len() / 2).min(frames);
      #[allow(static_mut_refs)]
-@@ -880,3 +1249,47 @@ mod pace_tests {
+@@ -880,3 +1272,47 @@ mod pace_tests {
          }
      }
  }

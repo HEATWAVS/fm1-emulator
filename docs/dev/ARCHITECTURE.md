@@ -54,6 +54,15 @@ harness: flashchip.mjs (options)  machine.mjs (boot: select before the first ins
 - **Exports** (the shipped engine has none of them): `fm1_flash_chip(id)` (0 original, 1 Puya, 2 UC25HQ80), `fm1_flash_timing(0 typical | 1 maximum)`, `fm1_flash_wip()` (the status register's WIP bit, **separate** from the unchanged `fm1_flash_busy()`, which stays chip-select), `fm1_flash_events(0 unspecified | 1 not modelled | 2 last not-modelled opcode)`, `fm1_flash_nv_status()`, `fm1_flash_nv_restore(v)`, `fm1_flash_uid_set(w0..w3)`, `fm1_flash_uid_clear()` (the 4Bh unique-ID fixture; `fm1_flash_events(3)` counts 4Bh reads answered without one), and four **test-only hooks** `fm1_test_bus_write32/read32`, `fm1_test_advance_us`, `fm1_test_set_wp` (drive SPI0, chip select, the cycle counter and WP# without firmware; `ci/machine/chiplive.mjs`). The unpatched v0.3.0 has 48 exports; the patched build 60.
 - **No USB host:** v0.3.0 has no `fm1_usb_plug`; `usb: true` does nothing on this engine.
 
+## Fault injection in the harness (Component 5, Stage 5D; `ci/machine/fault.mjs`, `faultscenario.mjs`, `faultpolicy.mjs`, `Fm1Machine`)
+```
+engine fm1_fault_* exports (Rust: chip journal + indeterminate list, SoC event, terminal power_cut) -> fault.mjs (encode, arm, read state/record/list, carry the list)
+  -> Fm1Machine (status: running | halted | power_cut; run() stops at once; powerCycle({ outcome }))  -> monitor.mjs watch(): verdict power-cut
+  -> faultscenario.mjs runFaultScenario(): deterministic JSON report            faultpolicy.mjs: explicit synthetic outcomes (never in the engine)
+```
+- Three stop states stay distinct everywhere (`fm1_halted` vs `fm1_power_cut`); the indeterminate list lives in the engine only and is carried into a rebooted machine by `fm1_fault_set_ranges`.
+- The engine records interruption, affected range and indeterminate state; any outcome is an explicit named policy applied by the caller at the reboot (docs/dev/FAULT-INJECTION.md section 13).
+
 ## Flash-chip reference model (Component 4 Stage A; `ci/machine/chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs`)
 ```
 chipspec.mjs   datasheet data: profiles (puya, uc25hq80), timing, block-protect tables, BEHAVIORS registry + citations
