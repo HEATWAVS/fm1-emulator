@@ -28,7 +28,7 @@ The script installs nothing.
 node ci/engine/build.mjs --upstream /path/to/fm1-emu
 # or let it clone the pinned tag into ci/engine/out/upstream (needs network)
 node ci/engine/build.mjs
-# also run the Rust host tests and the oracle replay, including the 4Bh scenarios (about a minute more)
+# also run the Rust host tests and the oracle replay, including the 4Bh and interrupted-operation (--with-fault) scenarios (about a minute more)
 node ci/engine/build.mjs --upstream /path/to/fm1-emu --test
 ```
 Output in `ci/engine/out/`: `fm1_web_chips.wasm` (the engine), `BUILD-RECORD.json` (toolchain, hashes), `src/` (the patched tree),
@@ -45,7 +45,7 @@ from `pin.json`.
    `fm1_test_bus_write32`, `fm1_test_bus_read32`, `fm1_test_advance_us`, `fm1_test_set_wp`; none removed) and its only import is `env.fm1_jit_compile`;
 6. the artifact's sha256 equals the verified hash **for the same toolchain**. `pin.json` records one:
    `rustc 1.97.1 (8bab26f4f 2026-07-14)` on Windows x64 gives
-   `2d4d30372f8747266999d713162842a66da1640e8d3937c8005d81084d385c5c` (2,722,805 bytes); an unpatched build of the same source with
+   `0a08cd3b1fcfcb44a73317ac0045ada64fc599655fa836caae043c51836726da` (2,732,347 bytes); an unpatched build of the same source with
    the same recipe gives `943d3cdf04d865de2cbe9e4d7787082353c0e9d90772e04af5b4292f72211bbe`. A different toolchain may produce a
    different hash legitimately: the build then says "no verified hash" and still checks everything else.
 

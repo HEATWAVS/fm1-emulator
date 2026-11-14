@@ -5,9 +5,11 @@
 // The live-engine replay (ci/machine/chiplivetests.mjs) uses this form; the Rust host tests use the default form.
 // 4Bh Read Unique ID is modelled by the reference model but NOT yet by the Rust engine, so the default transcripts never contain it (the engine answers FF and
 // counts it). --with-ruid appends scenarios that do, for the Rust port to be checked against (their S line carries uid=<32 hex digits>; absent = no fixture).
+// --with-fault appends interrupted-operation scenarios (Component 5, Stage 5C-1; their S line carries fault=1; line kinds J F C R Q K and "=> OFF": see the section below). They are opt-in so the default transcripts
+// (whose hashes are pinned) stay byte for byte what they were.
 // Line formats (see chip_oracle.rs): S/E scenario brackets; T transaction + result; P power cycle; A array check; D array hash; W WIP.
 import { writeFileSync } from "node:fs";
-const { ChipModel, ManualClock, UnspecifiedBehavior, NotModeled } = await import("../machine/chipmodel.mjs");
+const { ChipModel, ManualClock, UnspecifiedBehavior, NotModeled, FaultError, PoweredOff } = await import("../machine/chipmodel.mjs");
 const { PROFILES, SR } = await import("../machine/chipspec.mjs");
 
 const BYTES = 1 << 20;
@@ -288,6 +290,162 @@ if (process.argv.includes("--with-ruid")) {
     wren(); t([0x60]); idle(); t(RUID, { read: 16 }); power(); t(RUID, { read: 16 }); rdsr(); flushDirty(); end();
     begin(`ruid-nouid-${profile}`, profile, "maximum", { image: "ff" });
     t(RUID, { read: 16 }); t(RUID, { read: 3 }); t([0x4b], { read: 0 }); t(RUID, { read: 17 }); rdsr(); end();
+  }
+}
+
+// ------------------------------------------------------------------ interrupted operations (opt-in: --with-fault; Component 5, Stage 5C-1)
+// The oracle is the JavaScript reference model (armFault / powerCut / powerRestore / faultState). These scenarios exercise the chip state of a power cut only; they carry
+// `fault=1` on their S line so a driver that cannot arm a cut (the SoC register driver, until 5C-2) skips them. New line kinds (all times in SoC cycles at the S line's hz):
+//   J                                   enable journaling (the model always journals; the Rust chip needs it switched on for a harness cut)
+//   F <op> <nth> <accept|fraction|afterUs> <value>   armFault
+//   C => OK | ERR <id>                  powerCut()            R => OK | ERR <id>   powerRestore()
+//   T ... => OFF                        the chip is powered off and answers nothing (the model throws PoweredOff)
+//   Q <off> <accepted> <completed> <interrupted> <fired> <indeterminateReads> <ranges|->    faultState() snapshot
+//   K <op> <source> <ordinal> <nth|-> <startedAt> <cutAt> <endWouldBeAt> <detectedAt> <ranges> <len> <fnv before> <fnv unknownBefore> <fnv ifCompleted> <fnv unknownIfCompleted>
+//   D <fnv>                             over peekKnown (indeterminate bytes read as 0): the Rust side zeroes the same bytes
+// An indeterminate byte read through 03h comes back with unknown mask FF (the Rust chip returns whatever the array holds there: only known bits are compared).
+if (process.argv.includes("--with-fault")) {
+  const rangesText = (rs) => (rs.length ? rs.map(([lo, hi]) => `${lo}-${hi}`).join(",") : "-");
+  const fq = () => { const s = sc.chip.faultState(); lines.push(`Q ${s.poweredOff ? 1 : 0} ${s.ops.accepted} ${s.ops.completed} ${s.ops.interrupted} ${s.firedCount} ${s.indeterminateReads} ${rangesText(s.indeterminate)}`); stats.faultQ = (stats.faultQ || 0) + 1; };
+  const fk = () => {
+    const s = sc.chip.faultState();
+    if (!s.poweredOff || !s.last) return;
+    const r = s.last, c = sc.hz / 1_000_000;
+    lines.push(`K ${r.op} ${r.source} ${r.ordinal} ${r.nth ?? "-"} ${r.startedAt * c} ${r.cutAt * c} ${r.endWouldBeAt * c} ${r.detectedAt * c} ${rangesText(r.ranges)} ${r.before.length} ${fnv(r.before)} ${fnv(r.unknownBefore)} ${fnv(r.ifCompleted)} ${fnv(r.unknownIfCompleted)}`);
+    stats.faultK = (stats.faultK || 0) + 1;
+  };
+  const fa = (spec) => {
+    sc.chip.armFault(spec);
+    const k = "atAccept" in spec.at ? "accept" : "fraction" in spec.at ? "fraction" : "afterUs";
+    lines.push(`F ${spec.op} ${spec.nth ?? 1} ${k} ${k === "accept" ? 0 : spec.at.fraction ?? spec.at.afterUs}`);
+  };
+  const guarded = (letter, fn) => {
+    let res = "OK";
+    try { fn(); } catch (e) { if (e instanceof FaultError || e instanceof NotModeled) res = `ERR ${e.id}`; else throw e; }
+    lines.push(`${letter} => ${res}`);
+  };
+  const fc = () => guarded("C", () => sc.chip.powerCut());
+  const fr = () => guarded("R", () => sc.chip.powerRestore());
+  const ft = (tx, o = {}) => {
+    try { return t(tx, o); } catch (e) {
+      if (!(e instanceof PoweredOff)) throw e;
+      lines.push(`T ${o.adv ?? 0} 0 ${o.read ?? 0} ${hex(tx)} => OFF`); stats.transactions++; return "OFF";
+    }
+  };
+  const jump = (us) => { sc.clock.advance(us); lines.push(`T ${us} 0 0 - => ADV`); };
+  const probe = (addr, n) => ft([0x03, ...addr3(addr)], { read: n });
+  /** a known window next to a range: checked against the array only where the model knows every byte */
+  const af = (addr, len) => {
+    addr = Math.max(0, Math.min(addr, BYTES - len));
+    const r = sc.chip.peekKnown(addr, len);
+    if (r.unknown.some((u) => u)) return;
+    lines.push(`A ${addr} ${len} ${hex(r.bytes)}`); stats.arrayChecks++;
+  };
+  const fend = () => {
+    if (sc.chip.faultState().poweredOff) fr();
+    idle();
+    lines.push(`D ${fnv(sc.chip.peekKnown(0, BYTES).bytes)}`); stats.hashes++;
+    lines.push("E");
+  };
+  const fbegin = (name, profile, timing) => { begin(name, profile, timing, { image: "pat" }); lines[lines.length - 1] += " fault=1"; lines.push("J"); };
+
+  // every in-scope kind: how to accept it, which unit it puts at risk, where to look around it
+  const KIND = {
+    program: { key: "pp", range: [[0x1000, 0x1001], [0x10fe, 0x10ff]], look: [0x10e8, 40], accept: () => { wren(1000); t([0x02, ...addr3(0x10fe), 0x0f, 0xf0, 0x55, 0xaa]); } },
+    erase4k: { key: "se", range: [[0x2000, 0x2fff]], look: [0x1ff0, 32], accept: () => { wren(1000); t([0x20, ...addr3(0x2abc)]); } },
+    erase32k: { key: "se", range: [[0x8000, 0xffff]], look: [0x7ff0, 32], accept: () => { wren(1000); t([0x52, ...addr3(0x9000)]); } },
+    erase64k: { key: "se", range: [[0x10000, 0x1ffff]], look: [0xfff0, 32], accept: () => { wren(1000); t([0xd8, ...addr3(0x1a000)]); } },
+    "chip-erase": { key: "ce", range: [[0, BYTES - 1]], look: [0xffff0, 16], accept: () => { wren(1000); t([0x60]); } },
+  };
+  const dur = (profile, timing, op) => SPEC(profile)[timing][{ program: "pp", erase4k: "se", erase32k: "be32", erase64k: "be64", "chip-erase": "ce" }[op]];
+  const triggers = (d) => [
+    [{ atAccept: true }], [{ fraction: 0 }], [{ fraction: 0.25 }], [{ fraction: 0.5 }], [{ fraction: 0.99 }], [{ fraction: 1 / 3 }], [{ fraction: 0.999 }], [{ afterUs: 1 }], [{ afterUs: d - 1 }],
+  ].map(([a]) => a);
+  const trigName = (a) => ("atAccept" in a ? "accept" : "fraction" in a ? `f${a.fraction}` : `us${a.afterUs}`);
+  /** what happens after the cut was noticed: the chip is off, power returns, the range is read, then the follow-up that tells programs and erases apart */
+  const afterCut = (op, d) => {
+    const { range, look } = KIND[op];
+    probe(range[0][0], 4); ft([0x05], { read: 1 });
+    fr(); fq();
+    rdsr();
+    for (const [lo, hi] of range) { probe(lo, 8); probe(Math.max(lo, hi - 7), 8); }
+    probe(range[0][0], 3); fq();
+    af(look[0], look[1]);
+    if (op === "program") {
+      wren(10); t([0x02, ...addr3(0x10fe), 0xff, 0x00, 0x33, 0xcc]);
+      jump(SPEC(sc.profile)[sc.timing].pp + 5); fq(); probe(0x10fe, 4); probe(0x1000, 4);
+    } else {
+      const [lo] = range[0], cmd = { erase4k: [0x20], erase32k: [0x52], erase64k: [0xd8], "chip-erase": [0x60] }[op];
+      wren(10); t([...cmd, ...(op === "chip-erase" ? [] : addr3(lo))]);
+      fq(); jump(d - 1); fq(); jump(1); fq(); probe(lo, 4); fq();
+    }
+    rdsr(); af(look[0], look[1]);
+  };
+
+  for (const profile of ["puya", "uc25hq80"]) {
+    for (const timing of ["typical", "maximum"]) {
+      for (const op of Object.keys(KIND)) {
+        const d = dur(profile, timing, op);
+        // 1. a scheduled cut, then the clock jumps far past the cycle's end with NO chip access (cut precedence)
+        for (const at of triggers(d)) {
+          fbegin(`fault-${profile}-${timing}-${op}-${trigName(at)}`, profile, timing);
+          fa({ op, nth: 1, at });
+          KIND[op].accept();
+          jump(d + 5000); fq(); fk();
+          afterCut(op, d);
+          fend();
+        }
+        // 2. the observation lands exactly at the cut, one microsecond (or one cycle) either side
+        fbegin(`fault-${profile}-${timing}-${op}-boundary`, profile, timing);
+        fa({ op, nth: 1, at: { afterUs: d - 1 } });
+        KIND[op].accept();
+        jump(d - 2); fq();                 // one microsecond before the cut: still running
+        jump(1); fq(); fk();               // at the cut
+        fend();
+        // 3. a harness-initiated cut at several offsets
+        for (const off of [0, 1, Math.floor(d / 2), d - 1]) {
+          fbegin(`fault-${profile}-${timing}-${op}-powercut-${off}`, profile, timing);
+          KIND[op].accept();
+          if (off) jump(off);
+          fc(); fq(); fk();
+          afterCut(op, d);
+          fend();
+        }
+      }
+      // 4. refusals and selection: no cycle, write-status, page erase, already off, not off, nth counting, selectors, single shot
+      fbegin(`fault-${profile}-${timing}-refusals`, profile, timing);
+      fc(); fr();
+      wren(100); t([0x01, 0x00, 0x00]); fc(); jump(SPEC(profile)[timing].wrsr + 1); fq();
+      wren(); t([0x81, ...addr3(0x3000)]); fc(); jump(SPEC(profile)[timing].pe + 1); fq();
+      jump(10); fc();
+      fq(); fend();
+      fbegin(`fault-${profile}-${timing}-nth-erase`, profile, timing);
+      fa({ op: "erase", nth: 2, at: { fraction: 0.5 } });
+      wren(1000); t([0x02, ...addr3(0x1000), 0x00]); jump(SPEC(profile)[timing].pp + 1); fq();
+      wren(); t([0x81, ...addr3(0x3000)]); jump(SPEC(profile)[timing].pe + 1); fq();
+      wren(); t([0x20, ...addr3(0x4000)]); jump(SPEC(profile)[timing].se + 1); fq();
+      wren(); t([0x52, ...addr3(0x8000)]); jump(SPEC(profile)[timing].be32 + 1); fq(); fk();
+      probe(0x8000, 8); fr(); probe(0x8000, 8); probe(0x4000, 4); fq();
+      wren(); t([0x02, ...addr3(0x1000), 0x11]); jump(SPEC(profile)[timing].pp + 1); fq();    // single shot: this program completes
+      fend();
+      fbegin(`fault-${profile}-${timing}-any-3`, profile, timing);
+      fa({ op: "any", nth: 3, at: { afterUs: 5 } });
+      wren(1000); t([0x02, ...addr3(0x5000), 0x0f]); jump(SPEC(profile)[timing].pp + 1);
+      wren(); t([0x20, ...addr3(0x6000)]); jump(SPEC(profile)[timing].se + 1); fq();
+      wren(); t([0x02, ...addr3(0x7000), 0xf0, 0x0f]); jump(10); fq(); fk();
+      fr(); fq(); probe(0x7000, 4); wren(); t([0x02, ...addr3(0x7001), 0x3c, 0xc3, 0x55]); jump(SPEC(profile)[timing].pp + 1); fq(); probe(0x7000, 8);
+      fend();
+      // 5. a second cut inside an already indeterminate region: unknown stays unknown, the union is kept
+      fbegin(`fault-${profile}-${timing}-cut-over-cut`, profile, timing);
+      fa({ op: "program", nth: 1, at: { atAccept: true } });
+      wren(1000); t([0x02, ...addr3(0x1005), 0x0f, 0xf0, 0x55, 0xaa]); jump(1); fq(); fk();
+      fr();
+      wren(10); t([0x02, ...addr3(0x1007), 0x3c, 0xc3, 0x0f, 0xf0]); jump(5); fc(); fq(); fk();
+      fr(); probe(0x1004, 8); fq();
+      wren(10); t([0x20, ...addr3(0x1000)]); jump(100); fc(); fq(); fk();
+      fr(); wren(10); t([0x20, ...addr3(0x1000)]); jump(SPEC(profile)[timing].se + 1); fq(); probe(0x1000, 16);
+      fend();
+    }
   }
 }
 

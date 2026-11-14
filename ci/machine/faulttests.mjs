@@ -479,7 +479,7 @@ export function registerFaultTests({ test, T, both, mk, TIMING }) {
 
 /** Full-tier regression: with fault injection disabled the oracle transcripts are byte-identical to the pre-fault baseline. */
 export function registerFaultRegressionTests(test, { genPath }) {
-  test("fault injection disabled: the oracle transcripts (default, --with-ruid, --no-partial --with-ruid) are byte-identical to the pre-fault baseline", async () => {
+  test("fault injection disabled: the oracle transcripts (default, --with-ruid, --no-partial --with-ruid) are byte-identical to the pre-fault baseline; the --with-fault transcript is pinned", async () => {
     const { createHash } = await import("node:crypto");
     const { mkdtempSync, readFileSync: rf, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
@@ -490,6 +490,8 @@ export function registerFaultRegressionTests(test, { genPath }) {
         [[], "ff9b44b8d0b0b44d9c1546b43b279225ad160871c80e6a74e721061dd9f842a9"],
         [["--with-ruid"], "46749b805c73efbb541665fc89f42bfc2b759845f286c1f4c9e7c01ff3053f11"],
         [["--no-partial", "--with-ruid"], "6a52a23111e750dfe5d9ddc818161a80e6c37a59b21b334422d6b93b9e90a25c"],
+        // Stage 5C-1: the opt-in interrupted-operation scenarios (the Rust chip is checked against them); deterministic, pinned so a change to the model's fault semantics is noticed here
+        [["--with-ruid", "--with-fault"], "a1703335d38db5f67a57d7b6fd6be71f12c140f28c5e126585b98a8f99a838ba"],
       ];
       for (const [args, want] of baseline) {
         const file = join(dir, `t${args.length}.txt`);

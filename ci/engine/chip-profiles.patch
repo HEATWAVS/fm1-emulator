@@ -36,10 +36,10 @@ index b342349..426523d 100644
              }
 diff --git a/crates/fm1-soc/src/spichip.rs b/crates/fm1-soc/src/spichip.rs
 new file mode 100644
-index 0000000..d713bc9
+index 0000000..3940d8d
 --- /dev/null
 +++ b/crates/fm1-soc/src/spichip.rs
-@@ -0,0 +1,872 @@
+@@ -0,0 +1,2123 @@
 +//! Datasheet-based SPI NOR chip state machine (HEATWAVS Stage C1), used by `SpiFlash` when a
 +//! chip profile is selected. The default (no profile) is the original instantaneous model.
 +//!
@@ -61,6 +61,8 @@ index 0000000..d713bc9
 +//! * Time is the SoC cycle counter (`Periph::cycles`) at `hz`; cycle durations are the datasheet
 +//!   typical or maximum figures rounded up to whole cycles.
 +//! * FM1_FLASH_CUT power cuts are not honoured under a chip profile (native fm1-live only).
++//! * Interrupted operations (Component 5, Stage 5C-1): the chip state only. With fault injection off (the default) none of the
++//!   code below runs beyond a few counter increments. See "interrupted operations" further down and docs/dev/FAULT-INJECTION.md.
 +
 +use crate::spichip_tables::{Profile, Row, PUYA, UC25HQ80};
 +use crate::spiflash::FLASH_SIZE;
@@ -149,6 +151,200 @@ index 0000000..d713bc9
 +    next_unknown: u16,
 +    /// status bits whose value is open while the cycle runs
 +    unknown_bits: u16,
++    /// an erase cycle: the bytes it clears (and makes known again) when it completes (also 81h)
++    erase_range: Option<(usize, usize)>,
++    /// page program, 20h/52h/D8h erase or chip erase: the kinds a power cut may interrupt (Stage 5B scope)
++    in_scope: bool,
++}
++
++// ------------------------------------------------------------------------------------------------ interrupted operations (Component 5, Stage 5C-1)
++// The chip state of a power cut, mirroring ci/machine/chipmodel.mjs. The chip records THAT a cycle was interrupted, WHICH bytes it put at risk and
++// what they held before; it never decides what they hold afterwards. Bytes of an interrupted range are "indeterminate": a list kept beside
++// (never inside) the array. No synthetic fill exists here; a fill is an explicit test policy applied by the harness (faultpolicy.mjs).
++// D33 (the array changes at accept) means the array already holds the completed result while the cycle runs; the journal captured at accept
++// preserves the bytes as they were, so a cut can say what the range held before and what a normal completion would have produced.
++
++/// Which cycles an armed fault may match (`FAULT_OPS` in chipmodel.mjs). Page erase (81h), write-status, suspend/resume, reset and brown-out
++/// are out of scope and cannot be named: a cut never matches them.
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum FaultOp {
++    Program,
++    Erase4k,
++    Erase32k,
++    Erase64k,
++    /// any of the three sector/block erases
++    Erase,
++    ChipErase,
++    Any,
++}
++
++impl FaultOp {
++    pub fn name(self) -> &'static str {
++        match self {
++            FaultOp::Program => "program",
++            FaultOp::Erase4k => "erase4k",
++            FaultOp::Erase32k => "erase32k",
++            FaultOp::Erase64k => "erase64k",
++            FaultOp::Erase => "erase",
++            FaultOp::ChipErase => "chip-erase",
++            FaultOp::Any => "any",
++        }
++    }
++    /// `matchesOp(selector, op)` of the reference model; `cycle` is a concrete kind (never `Erase` or `Any`).
++    fn matches(self, cycle: FaultOp) -> bool {
++        self == cycle || self == FaultOp::Any || (self == FaultOp::Erase && matches!(cycle, FaultOp::Erase4k | FaultOp::Erase32k | FaultOp::Erase64k))
++    }
++}
++
++/// When, after the accept of the matching cycle, the cut happens. The cut must come before the cycle ends (a cut at the end is a normal completion).
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum FaultAt {
++    /// at the accept itself (offset 0)
++    AtAccept,
++    /// `floor(fraction * duration_us)` microseconds after the accept, 0 <= fraction < 1 (the same IEEE computation as `Math.floor(f * dur)`)
++    Fraction(f64),
++    /// this many microseconds after the accept, below the shortest duration the selector can match
++    AfterUs(u32),
++}
++
++/// One deterministic power cut: the `nth` accepted in-scope cycle matching `op`, cut at `at`. Single shot.
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub struct FaultSpec {
++    pub op: FaultOp,
++    pub nth: u32,
++    pub at: FaultAt,
++}
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum CutSource {
++    /// the armed trigger fired
++    Scheduled,
++    /// `power_cut()`
++    Harness,
++}
++
++/// What a cut left behind. `before` and `if_completed` are INPUTS for an outcome policy (what the range held, and what a normal completion
++/// would have produced), never outcomes; a byte whose value is unknown has its mask byte set to 1 and a 0 placeholder. Times are SoC cycles.
++#[derive(Clone, Debug, PartialEq)]
++pub struct FaultRecord {
++    pub source: CutSource,
++    pub op: FaultOp,
++    /// 1-based count of every cycle accepted since power-on (write-status and page erase included)
++    pub ordinal: u32,
++    pub nth: Option<u32>,
++    pub started_at: u64,
++    pub cut_at: u64,
++    pub end_would_be_at: u64,
++    pub detected_at: u64,
++    /// inclusive absolute addresses: the latched runs of a page program, the unit of an erase, the whole array for a chip erase
++    pub ranges: Vec<(usize, usize)>,
++    pub before: Vec<u8>,
++    pub unknown_before: Vec<u8>,
++    pub if_completed: Vec<u8>,
++    pub unknown_if_completed: Vec<u8>,
++}
++
++/// Refusals of the fault interface (ids as in chipmodel.mjs).
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub enum FaultError {
++    BadNth,
++    BadAt,
++    AlreadyArmed,
++    /// the chip is powered off after a cut: `power_restore()` first
++    UseRestore,
++    NoCycle,
++    AlreadyOff,
++    NotOff,
++    /// a write-status or page-erase cycle: never interrupted, never silently completed
++    OutOfScope,
++    /// the running cycle was accepted before fault injection was enabled, so nothing was journaled for it
++    NotEnabled,
++}
++
++impl FaultError {
++    pub fn id(self) -> &'static str {
++        match self {
++            FaultError::BadNth => "fault.bad-nth",
++            FaultError::BadAt => "fault.bad-at",
++            FaultError::AlreadyArmed => "fault.already-armed",
++            FaultError::UseRestore => "fault.use-restore",
++            FaultError::NoCycle => "fault.no-cycle",
++            FaultError::AlreadyOff => "fault.already-off",
++            FaultError::NotOff => "fault.not-off",
++            FaultError::OutOfScope => "fault.out-of-scope",
++            FaultError::NotEnabled => "fault.not-enabled",
++        }
++    }
++}
++
++#[derive(Clone, Copy)]
++struct Armed {
++    spec: FaultSpec,
++    seen: u32,
++    scheduled: bool,
++}
++
++/// What the running in-scope cycle looked like at accept.
++struct Journal {
++    op: FaultOp,
++    ordinal: u32,
++    started_at: u64,
++    end: u64,
++    cut_at: Option<u64>,
++    ranges: Vec<(usize, usize)>,
++    before: Vec<u8>,
++    unknown_before: Vec<u8>,
++    if_completed: Vec<u8>,
++    unknown_if_completed: Vec<u8>,
++}
++
++/// Captured before the array is changed.
++struct Pre {
++    ranges: Vec<(usize, usize)>,
++    before: Vec<u8>,
++    unknown_before: Vec<u8>,
++}
++
++#[derive(Default)]
++struct FaultCtl {
++    /// journal every in-scope cycle at accept (set by `arm_fault` or `set_fault_injection`); off by default
++    journaling: bool,
++    armed: Option<Armed>,
++    journal: Option<Journal>,
++    powered_off: bool,
++    /// the array still holds the completed image in the cut range: `sync_cut` writes the pre-image back as a labelled placeholder
++    restore_pending: bool,
++    last: Option<FaultRecord>,
++    fired: u32,
++    /// sorted, disjoint, non-adjacent inclusive ranges: bytes whose contents are physically unknown
++    indet: Vec<(usize, usize)>,
++    indet_reads: u32,
++    off_accesses: u32,
++    refused: u32,
++    accepted: u32,
++    completed: u32,
++    interrupted: u32,
++    ordinal: u32,
++}
++
++/// A snapshot of the fault machinery (settles first). Inert (zeros, empty) unless fault injection is used.
++#[derive(Clone, Debug, PartialEq)]
++pub struct FaultState {
++    /// (trigger, matching cycles seen, scheduled)
++    pub armed: Option<(FaultSpec, u32, bool)>,
++    pub journaling: bool,
++    pub powered_off: bool,
++    pub fired: u32,
++    pub last: Option<FaultRecord>,
++    pub indeterminate: Vec<(usize, usize)>,
++    pub indeterminate_reads: u32,
++    /// SPI bytes offered to a powered-off chip (answered 0xFF; the reference model throws `PoweredOff`)
++    pub powered_off_accesses: u32,
++    /// `power_cycle()` calls refused while powered off
++    pub power_cycle_refused: u32,
++    pub accepted: u32,
++    pub completed: u32,
++    pub interrupted: u32,
 +}
 +
 +pub struct Chip {
@@ -173,6 +369,10 @@ index 0000000..d713bc9
 +    /// The 128-bit unique ID 4Bh transmits, byte 0 (bits 127-120) first. A caller-supplied fixture: the value is per device and in neither
 +    /// datasheet, so there is none unless one is set (and none is ever invented).
 +    uid: Option<[u8; 16]>,
++    /// interrupted-operation state (Component 5); inert unless fault injection is used
++    fault: FaultCtl,
++    /// guard: count a read of indeterminate bytes once per transaction
++    indet_counted: bool,
 +    pub events: Events,
 +}
 +
@@ -195,6 +395,8 @@ index 0000000..d713bc9
 +            id_extra: false,
 +            uid_counted: false,
 +            uid: None,
++            fault: FaultCtl::default(),
++            indet_counted: false,
 +            events: Events::default(),
 +        }
 +    }
@@ -238,15 +440,325 @@ index 0000000..d713bc9
 +    /// Take (and clear) the recorded event ids.
 +    pub fn take_log(&mut self) -> Vec<&'static str> { std::mem::take(&mut self.events.log) }
 +
++    // ------------------------------------------------------------ interrupted operations (Component 5, Stage 5C-1)
++    /// Journal every in-scope cycle from now on, so `power_cut()` can interrupt one without a trigger. Off by default: with it off, and no
++    /// trigger armed, nothing is captured and the chip behaves exactly as before. (`arm_fault` turns it on.)
++    pub fn set_fault_injection(&mut self, on: bool) { self.fault.journaling = on; }
++
++    /// Arm one deterministic power cut (single shot). Refusals mirror `ChipModel.armFault`; order: nth, already armed, powered off, trigger.
++    pub fn arm_fault(&mut self, spec: FaultSpec) -> Result<(), FaultError> {
++        if spec.nth < 1 {
++            return Err(FaultError::BadNth);
++        }
++        if self.fault.armed.is_some() {
++            return Err(FaultError::AlreadyArmed);
++        }
++        if self.fault.powered_off {
++            return Err(FaultError::UseRestore);
++        }
++        let t = self.us();
++        let min_dur = match spec.op {
++            FaultOp::Program => t.pp,
++            FaultOp::Erase4k => t.se,
++            FaultOp::Erase32k => t.be32,
++            FaultOp::Erase64k => t.be64,
++            FaultOp::Erase => t.se.min(t.be32).min(t.be64),
++            FaultOp::ChipErase => t.ce,
++            FaultOp::Any => t.pp.min(t.se).min(t.be32).min(t.be64).min(t.ce),
++        };
++        let ok = match spec.at {
++            FaultAt::AtAccept => true,
++            FaultAt::Fraction(f) => f.is_finite() && f >= 0.0 && f < 1.0, // 1 would be a normal completion
++            FaultAt::AfterUs(n) => n < min_dur,                            // at or after the end of the shortest matching cycle is a normal completion
++        };
++        if !ok {
++            return Err(FaultError::BadAt);
++        }
++        self.fault.armed = Some(Armed { spec, seen: 0, scheduled: false });
++        self.fault.journaling = true;
++        Ok(())
++    }
++
++    /// Remove the trigger. A cut already scheduled for the running cycle still happens.
++    pub fn disarm_fault(&mut self) { self.fault.armed = None; }
++
++    /// Cut power NOW (harness-initiated) while an in-scope cycle is in flight; if a scheduled cut was already due, that one happened and its record is returned.
++    /// Refused, never silently completed: no cycle running, an out-of-scope cycle (write-status, page erase), already off, or a cycle accepted before
++    /// fault injection was enabled.
++    pub fn power_cut(&mut self) -> Result<FaultRecord, FaultError> {
++        let was_off = self.fault.powered_off;
++        self.settle();
++        if self.fault.powered_off {
++            if was_off {
++                return Err(FaultError::AlreadyOff);
++            }
++            return Ok(self.fault.last.clone().expect("a cut leaves a record"));
++        }
++        let Some(b) = self.busy else { return Err(FaultError::NoCycle) };
++        if !b.in_scope {
++            return Err(FaultError::OutOfScope);
++        }
++        if self.fault.journal.is_none() {
++            return Err(FaultError::NotEnabled);
++        }
++        let now = self.now;
++        self.fire_cut(now, CutSource::Harness);
++        Ok(self.fault.last.clone().expect("a cut leaves a record"))
++    }
++
++    /// Power returns after a cut: standby, WEL = 0, nothing running, non-volatile status bits kept, SRP 1:0 back to 0:0. Never resumes the interrupted
++    /// cycle. The indeterminate list is kept.
++    pub fn power_restore(&mut self) -> Result<(), FaultError> {
++        self.settle();
++        if !self.fault.powered_off {
++            return Err(FaultError::NotOff);
++        }
++        self.fault.powered_off = false;
++        self.busy = None;
++        self.fault.journal = None;
++        self.sr &= !(WEL | WIP);
++        self.unknown &= !WEL;
++        if self.unknown & (SRP0 | SRP1) == 0 && self.sr & SRP1 != 0 && self.sr & SRP0 == 0 {
++            self.sr &= !SRP1;
++        }
++        self.cmd = Cmd::Ignore;
++        self.n = 0;
++        Ok(())
++    }
++
++    /// Settle at the current clock and, after a cut, write the pre-image back into the cut range as a labelled PLACEHOLDER (D33: the array holds the completed
++    /// image until now). It is not an outcome: the indeterminate list stays the authority. Only bytes whose pre-image was known are written. Returns the span
++    /// of the array changed, if any. The caller that owns the array calls this wherever it advances the clock.
++    pub fn sync_cut(&mut self, mem: &mut [u8]) -> Option<(usize, usize)> {
++        self.settle();
++        if !self.fault.restore_pending {
++            return None;
++        }
++        self.fault.restore_pending = false;
++        let rec = self.fault.last.as_ref()?;
++        let (mut lo, mut hi, mut i) = (usize::MAX, 0, 0);
++        for &(l, h) in &rec.ranges {
++            for a in l..=h {
++                if rec.unknown_before[i] == 0 {
++                    mem[a] = rec.before[i];
++                }
++                i += 1;
++            }
++            lo = lo.min(l);
++            hi = hi.max(h + 1);
++        }
++        Some((lo, hi))
++    }
++
++    /// What the fault machinery knows at the current chip time (settles first, so a due cut is reported as fired).
++    pub fn fault_state(&mut self) -> FaultState {
++        self.settle();
++        let f = &self.fault;
++        FaultState {
++            armed: f.armed.map(|a| (a.spec, a.seen, a.scheduled)),
++            journaling: f.journaling,
++            powered_off: f.powered_off,
++            fired: f.fired,
++            last: f.last.clone(),
++            indeterminate: f.indet.clone(),
++            indeterminate_reads: f.indet_reads,
++            powered_off_accesses: f.off_accesses,
++            power_cycle_refused: f.refused,
++            accepted: f.accepted,
++            completed: f.completed,
++            interrupted: f.interrupted,
++        }
++    }
++
++    /// The indeterminate ranges (inclusive, sorted, disjoint, merged when adjacent). Bytes of the array inside them are placeholders or synthetic test input,
++    /// never a claim about the physical chip.
++    pub fn indeterminate(&self) -> &[(usize, usize)] { &self.fault.indet }
++
++    fn program_runs(&self, page: usize) -> Vec<(usize, usize)> {
++        let mut runs: Vec<(usize, usize)> = Vec::new();
++        for o in 0..PAGE {
++            if self.used[o] {
++                match runs.last_mut() {
++                    Some(r) if r.1 + 1 == page + o => r.1 = page + o,
++                    _ => runs.push((page + o, page + o)),
++                }
++            }
++        }
++        runs
++    }
++
++    /// The pre-image of `ranges`, taken before the array is changed; bytes already indeterminate are marked unknown (0 placeholder).
++    fn fault_pre(&self, mem: &[u8], ranges: Vec<(usize, usize)>) -> Pre {
++        let n: usize = ranges.iter().map(|&(l, h)| h - l + 1).sum();
++        let (mut before, mut unknown_before) = (Vec::with_capacity(n), vec![0u8; n]);
++        let mut i = 0;
++        for &(lo, hi) in &ranges {
++            if self.fault.indet.is_empty() {
++                before.extend_from_slice(&mem[lo..=hi]);
++                i += hi - lo + 1;
++            } else {
++                for a in lo..=hi {
++                    if self.is_indet(a) {
++                        before.push(0);
++                        unknown_before[i] = 1;
++                    } else {
++                        before.push(mem[a]);
++                    }
++                    i += 1;
++                }
++            }
++        }
++        Pre { ranges, before, unknown_before }
++    }
++
++    /// After an in-scope cycle was accepted and the array changed (D33): journal it, count it against the armed trigger and schedule the cut.
++    fn fault_post(&mut self, mem: &[u8], op: FaultOp, us: u32, pre: Option<Pre>) {
++        let Some(pre) = pre else { return };
++        let depends_on_old = op == FaultOp::Program; // a program over an indeterminate byte stays indeterminate; an erase defines its bytes
++        let n = pre.before.len();
++        let (mut if_completed, mut unknown_if_completed) = (Vec::with_capacity(n), vec![0u8; n]);
++        let mut i = 0;
++        for &(lo, hi) in &pre.ranges {
++            for a in lo..=hi {
++                if !depends_on_old {
++                    if_completed.push(0xff);
++                } else if self.is_indet(a) {
++                    if_completed.push(0);
++                    unknown_if_completed[i] = 1;
++                } else {
++                    if_completed.push(mem[a]); // the array already holds pre & latch (D33)
++                }
++                i += 1;
++            }
++        }
++        let end = self.busy.expect("start() ran").end;
++        let mut offset_us = None;
++        if let Some(a) = self.fault.armed.as_mut() {
++            if !a.scheduled && a.spec.op.matches(op) {
++                a.seen += 1;
++                if a.seen == a.spec.nth {
++                    a.scheduled = true;
++                    offset_us = Some(match a.spec.at {
++                        FaultAt::AtAccept => 0,
++                        FaultAt::Fraction(f) => (f * us as f64).floor() as u32,
++                        FaultAt::AfterUs(n) => n,
++                    });
++                }
++            }
++        }
++        // always before the end: the clamp only matters at clock rates below 1 MHz, where whole-cycle rounding could reach it
++        let cut_at = offset_us.map(|o| (self.now + self.cycles(o)).min(end - 1));
++        self.fault.journal = Some(Journal {
++            op,
++            ordinal: self.fault.ordinal,
++            started_at: self.now,
++            end,
++            cut_at,
++            ranges: pre.ranges,
++            before: pre.before,
++            unknown_before: pre.unknown_before,
++            if_completed,
++            unknown_if_completed,
++        });
++    }
++
++    /// The cycle in flight is interrupted: it never completes, its range becomes indeterminate, the chip is off until `power_restore()`. The array is not
++    /// touched here (see `sync_cut`).
++    fn fire_cut(&mut self, cut_at: u64, source: CutSource) {
++        let j = self.fault.journal.take().expect("a cut needs the journal of the running cycle");
++        self.busy = None;
++        let nth = if source == CutSource::Scheduled { self.fault.armed.map(|a| a.spec.nth) } else { None };
++        for &(lo, hi) in &j.ranges {
++            self.add_indet(lo, hi);
++        }
++        self.fault.last = Some(FaultRecord {
++            source,
++            op: j.op,
++            ordinal: j.ordinal,
++            nth,
++            started_at: j.started_at,
++            cut_at,
++            end_would_be_at: j.end,
++            detected_at: if source == CutSource::Scheduled { self.now } else { cut_at },
++            ranges: j.ranges,
++            before: j.before,
++            unknown_before: j.unknown_before,
++            if_completed: j.if_completed,
++            unknown_if_completed: j.unknown_if_completed,
++        });
++        self.fault.armed = None;
++        self.fault.powered_off = true;
++        self.fault.restore_pending = true;
++        self.fault.interrupted += 1;
++        self.fault.fired += 1;
++    }
++
++    // the indeterminate set: sorted, disjoint inclusive ranges kept beside (never inside) the array; same rules as the reference model
++    fn is_indet(&self, a: usize) -> bool {
++        for &(lo, hi) in &self.fault.indet {
++            if a < lo {
++                return false;
++            }
++            if a <= hi {
++                return true;
++            }
++        }
++        false
++    }
++    fn add_indet(&mut self, lo: usize, hi: usize) {
++        let mut all = self.fault.indet.clone();
++        all.push((lo, hi));
++        all.sort_by_key(|r| r.0);
++        let mut out: Vec<(usize, usize)> = Vec::new();
++        for r in all {
++            match out.last_mut() {
++                Some(last) if r.0 <= last.1 + 1 => last.1 = last.1.max(r.1),
++                _ => out.push(r),
++            }
++        }
++        self.fault.indet = out;
++    }
++    fn clear_indet(&mut self, lo: usize, hi: usize) {
++        let mut out: Vec<(usize, usize)> = Vec::new();
++        for &(l, h) in &self.fault.indet {
++            if h < lo || l > hi {
++                out.push((l, h));
++                continue;
++            }
++            if l < lo {
++                out.push((l, lo - 1));
++            }
++            if h > hi {
++                out.push((hi + 1, h));
++            }
++        }
++        self.fault.indet = out;
++    }
++
 +    // ------------------------------------------------------------ time and status
 +    fn settle(&mut self) {
 +        if let Some(b) = self.busy {
++            // CUT PRECEDENCE: a scheduled cut is checked BEFORE completion, so a cycle whose cut time has passed can never complete,
++            // however late the chip is next touched (cut_at < end always holds: `fault_post` clamps it).
++            if let Some(c) = self.fault.journal.as_ref().and_then(|j| j.cut_at) {
++                if self.now >= c {
++                    self.fire_cut(c, CutSource::Scheduled);
++                    return;
++                }
++            }
 +            if self.now >= b.end {
 +                self.busy = None;
 +                if b.kind == CycleKind::Wrsr {
 +                    self.sr = b.next_sr;
 +                    self.unknown = b.next_unknown;
 +                }
++                if let Some((lo, hi)) = b.erase_range {
++                    if !self.fault.indet.is_empty() {
++                        self.clear_indet(lo, hi); // a complete erase makes its bytes known again (0xFF)
++                    }
++                }
++                self.fault.completed += 1;
++                self.fault.journal = None;
 +                self.sr &= !(WEL | WIP); // completion resets WEL (both datasheets)
 +                self.unknown &= !WEL;
 +            }
@@ -300,6 +812,7 @@ index 0000000..d713bc9
 +    pub fn restore_nv(&mut self, packed: u32) {
 +        const NV: u16 = LOW_WRITABLE | HIGH_WRITABLE;
 +        self.busy = None;
++        self.fault.journal = None;
 +        self.sr = (self.sr & !NV) | (packed as u16 & NV);
 +        self.unknown = (self.unknown & !NV) | ((packed >> 16) as u16 & NV);
 +        self.power_cycle();
@@ -309,6 +822,10 @@ index 0000000..d713bc9
 +    /// fault injection, not modelled): recorded and ignored.
 +    pub fn power_cycle(&mut self) {
 +        self.settle();
++        if self.fault.powered_off {
++            self.fault.refused += 1; // after a cut use power_restore() (the reference model throws fault.use-restore)
++            return;
++        }
 +        if self.busy.is_some() {
 +            self.event("nm.power-loss", false);
 +            return;
@@ -329,6 +846,7 @@ index 0000000..d713bc9
 +        self.n = 0;
 +        self.id_extra = false;
 +        self.uid_counted = false;
++        self.indet_counted = false;
 +    }
 +
 +    fn first_byte(&mut self, op: u8) {
@@ -397,6 +915,13 @@ index 0000000..d713bc9
 +
 +    /// One byte exchanged on MOSI; returns the byte on MISO. `mem` is the array (reads only).
 +    pub fn transfer(&mut self, mem: &[u8], out: u8) -> u8 {
++        if self.fault.powered_off || self.fault.journal.is_some() {
++            self.settle(); // a due cut fires before anything else is answered
++            if self.fault.powered_off {
++                self.fault.off_accesses += 1; // a chip without power answers nothing
++                return 0xff;
++            }
++        }
 +        let i = self.n;
 +        self.n += 1;
 +        if i == 0 {
@@ -459,7 +984,12 @@ index 0000000..d713bc9
 +                    0xff // fast-read dummy byte
 +                } else {
 +                    let start = ((self.hdr[1] as usize) << 16) | ((self.hdr[2] as usize) << 8) | self.hdr[3] as usize;
-+                    mem[(start + (k - head)) % BYTES]
++                    let a = (start + (k - head)) % BYTES;
++                    if !self.fault.indet.is_empty() && !self.indet_counted && self.is_indet(a) {
++                        self.indet_counted = true;
++                        self.fault.indet_reads += 1; // the byte returned is whatever the array holds: it is unknown, and the read is counted
++                    }
++                    mem[a]
 +                }
 +            }
 +            Cmd::Write(op) => {
@@ -487,6 +1017,9 @@ index 0000000..d713bc9
 +            return None;
 +        }
 +        self.settle();
++        if self.fault.powered_off {
++            return None; // a cut fired while the command was being clocked in: nothing executes
++        }
 +        match cmd {
 +            Cmd::Ignore | Cmd::Rdsr(_) | Cmd::Rdid => None,
 +            Cmd::Ruid => {
@@ -511,7 +1044,9 @@ index 0000000..d713bc9
 +    fn addr(&self) -> usize { ((self.hdr[1] as usize) << 16) | ((self.hdr[2] as usize) << 8) | self.hdr[3] as usize }
 +
 +    fn start(&mut self, kind: CycleKind, us: u32, next_sr: u16, next_unknown: u16, unknown_bits: u16) {
-+        self.busy = Some(Busy { end: self.now + self.cycles(us), kind, next_sr, next_unknown, unknown_bits });
++        self.fault.accepted += 1;
++        self.fault.ordinal += 1;
++        self.busy = Some(Busy { end: self.now + self.cycles(us), kind, next_sr, next_unknown, unknown_bits, erase_range: None, in_scope: false });
 +    }
 +    fn us(&self) -> &'static crate::spichip_tables::TimingUs {
 +        let p = self.profile();
@@ -609,6 +1144,12 @@ index 0000000..d713bc9
 +            }
 +            Ok(false) => {}
 +        }
++        let pre = if self.fault.journaling {
++            let runs = self.program_runs(page);
++            Some(self.fault_pre(mem, runs))
++        } else {
++            None
++        };
 +        let (mut lo, mut hi) = (PAGE, 0);
 +        for o in 0..PAGE {
 +            if self.used[o] {
@@ -619,6 +1160,8 @@ index 0000000..d713bc9
 +        }
 +        let us = self.us().pp;
 +        self.start(CycleKind::Program, us, 0, 0, 0);
++        self.busy.as_mut().unwrap().in_scope = true;
++        self.fault_post(mem, FaultOp::Program, us, pre);
 +        Some((page + lo, page + hi))
 +    }
 +
@@ -652,6 +1195,13 @@ index 0000000..d713bc9
 +            }
 +            Ok(false) => {}
 +        }
++        let cycle_op = match op {
++            0x20 => Some(FaultOp::Erase4k),
++            0x52 => Some(FaultOp::Erase32k),
++            0xd8 => Some(FaultOp::Erase64k),
++            _ => None, // 81h page erase is out of scope
++        };
++        let pre = if cycle_op.is_some() && self.fault.journaling { Some(self.fault_pre(mem, vec![(lo, hi)])) } else { None };
 +        mem[lo..=hi].fill(0xff);
 +        let t = self.us();
 +        let us = match op {
@@ -661,6 +1211,11 @@ index 0000000..d713bc9
 +            _ => t.be64,
 +        };
 +        self.start(CycleKind::Erase, us, 0, 0, 0);
++        self.busy.as_mut().unwrap().erase_range = Some((lo, hi));
++        if let Some(c) = cycle_op {
++            self.busy.as_mut().unwrap().in_scope = true;
++            self.fault_post(mem, c, us, pre);
++        }
 +        Some((lo, hi + 1))
 +    }
 +
@@ -689,9 +1244,13 @@ index 0000000..d713bc9
 +            self.ignored_protected("ce");
 +            return None;
 +        }
++        let pre = if self.fault.journaling { Some(self.fault_pre(mem, vec![(0, BYTES - 1)])) } else { None };
 +        mem.fill(0xff);
 +        let us = self.us().ce;
 +        self.start(CycleKind::Erase, us, 0, 0, 0);
++        self.busy.as_mut().unwrap().erase_range = Some((0, BYTES - 1));
++        self.busy.as_mut().unwrap().in_scope = true;
++        self.fault_post(mem, FaultOp::ChipErase, us, pre);
 +        Some((0, BYTES))
 +    }
 +
@@ -912,6 +1471,698 @@ index 0000000..d713bc9
 +        }
 +    }
 +}
++
++/// Interrupted-operation chip state (Component 5, Stage 5C-1). Literal expectations were computed independently of the code under test
++/// (pattern bytes and hashes with a separate script; cycle arithmetic by hand at 100 MHz = 100 cycles per microsecond).
++#[cfg(test)]
++mod fault_tests {
++    use super::*;
++    use crate::spichip_tables::{PUYA, UC25HQ80};
++
++    const HZ: u64 = 100_000_000;
++    const CPU: u64 = HZ / 1_000_000; // cycles per microsecond
++    const PROFILES: [ChipKind; 2] = [ChipKind::Puya, ChipKind::Uc25hq80];
++    const TIMINGS: [Timing; 2] = [Timing::Typical, Timing::Maximum];
++    const CUTS: [FaultOp; 5] = [FaultOp::Program, FaultOp::Erase4k, FaultOp::Erase32k, FaultOp::Erase64k, FaultOp::ChipErase];
++
++    fn pat(i: usize) -> u8 { (((i * 131 + (i >> 8) * 17) ^ 0x5a) & 0xff) as u8 }
++    fn pattern() -> Vec<u8> { (0..BYTES).map(pat).collect() }
++    fn fnv(a: &[u8]) -> u32 {
++        let mut h: u32 = 0x811c9dc5;
++        for &b in a {
++            h ^= b as u32;
++            h = h.wrapping_mul(0x01000193);
++        }
++        h
++    }
++
++    struct Rig {
++        c: Chip,
++        mem: Vec<u8>,
++    }
++    impl Rig {
++        fn new(kind: ChipKind, timing: Timing, patterned: bool) -> Rig {
++            let mut c = Chip::new(kind, timing);
++            c.set_clock(0, HZ);
++            Rig { c, mem: if patterned { pattern() } else { vec![0xff; BYTES] } }
++        }
++        /// time passes and NOTHING touches the chip
++        fn clock(&mut self, us: u64) { self.c.set_clock(us * CPU, HZ); }
++        fn clock_cycles(&mut self, cycles: u64) { self.c.set_clock(cycles, HZ); }
++        fn xfer(&mut self, tx: &[u8], read: usize) -> Vec<u8> {
++            self.c.select();
++            for &b in tx {
++                self.c.transfer(&self.mem, b);
++            }
++            let out = (0..read).map(|_| self.c.transfer(&self.mem, 0)).collect();
++            self.c.release(&mut self.mem, 0);
++            self.c.sync_cut(&mut self.mem);
++            out
++        }
++        fn wren(&mut self) { self.xfer(&[0x06], 0); }
++        fn program(&mut self, addr: u32, data: &[u8]) {
++            self.wren();
++            let mut tx = vec![0x02, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8];
++            tx.extend_from_slice(data);
++            self.xfer(&tx, 0);
++        }
++        fn erase(&mut self, op: u8, addr: u32) {
++            self.wren();
++            self.xfer(&[op, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8], 0);
++        }
++        fn chip_erase(&mut self) {
++            self.wren();
++            self.xfer(&[0x60], 0);
++        }
++        fn read(&mut self, addr: u32, n: usize) -> Vec<u8> { self.xfer(&[0x03, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8], n) }
++        fn rdsr(&mut self) -> u8 { self.xfer(&[0x05], 1)[0] }
++        /// accept one in-scope cycle of kind `op` at its canonical address; returns the ranges it puts at risk
++        fn accept(&mut self, op: FaultOp) -> Vec<(usize, usize)> {
++            match op {
++                FaultOp::Program => {
++                    self.program(0x1005, &[0x0f, 0xf0, 0x55, 0xaa]);
++                    vec![(0x1005, 0x1008)]
++                }
++                FaultOp::Erase4k => {
++                    self.erase(0x20, 0x2000);
++                    vec![(0x2000, 0x2fff)]
++                }
++                FaultOp::Erase32k => {
++                    self.erase(0x52, 0x8000);
++                    vec![(0x8000, 0xffff)]
++                }
++                FaultOp::Erase64k => {
++                    self.erase(0xd8, 0x10000);
++                    vec![(0x10000, 0x1ffff)]
++                }
++                FaultOp::ChipErase => {
++                    self.chip_erase();
++                    vec![(0, BYTES - 1)]
++                }
++                _ => unreachable!(),
++            }
++        }
++        fn state(&mut self) -> FaultState { self.c.fault_state() }
++    }
++
++    fn dur_us(kind: ChipKind, timing: Timing, op: FaultOp) -> u32 {
++        let p = if kind == ChipKind::Puya { &PUYA } else { &UC25HQ80 };
++        let t = if timing == Timing::Typical { &p.typical } else { &p.maximum };
++        match op {
++            FaultOp::Program => t.pp,
++            FaultOp::Erase4k => t.se,
++            FaultOp::Erase32k => t.be32,
++            FaultOp::Erase64k => t.be64,
++            FaultOp::ChipErase => t.ce,
++            _ => unreachable!(),
++        }
++    }
++    /// every trigger form, with the offset in whole microseconds it must produce for a cycle of `d` microseconds
++    fn triggers(d: u32) -> Vec<(FaultAt, u32)> {
++        vec![
++            (FaultAt::AtAccept, 0),
++            (FaultAt::Fraction(0.0), 0),
++            (FaultAt::Fraction(0.25), (0.25 * d as f64).floor() as u32),
++            (FaultAt::Fraction(0.5), d / 2),
++            (FaultAt::Fraction(0.99), (0.99 * d as f64).floor() as u32),
++            (FaultAt::Fraction(1.0 / 3.0), (d as f64 / 3.0).floor() as u32),
++            (FaultAt::Fraction(0.999), (0.999 * d as f64).floor() as u32),
++            (FaultAt::AfterUs(1), 1),
++            (FaultAt::AfterUs(d - 1), d - 1),
++        ]
++    }
++    const T0: u64 = 1000; // microseconds at which the cycle is accepted
++
++    // ------------------------------------------------------------------ precedence and timing
++
++    /// The case requirement 1 names: the clock moves far past the end of the cycle and nothing touches the chip until afterwards.
++    /// The cut must have happened, completion must not have. Control: the same run without a trigger completes.
++    #[test]
++    fn a_due_cut_beats_completion_even_with_no_access_until_long_after() {
++        for kind in PROFILES {
++            for timing in TIMINGS {
++                for op in CUTS {
++                    let d = dur_us(kind, timing, op);
++                    for (at, off) in triggers(d) {
++                        let tag = format!("{kind:?} {timing:?} {op:?} {at:?}");
++                        let mut r = Rig::new(kind, timing, false);
++                        r.c.arm_fault(FaultSpec { op, nth: 1, at }).unwrap();
++                        r.clock(T0);
++                        let ranges = r.accept(op);
++                        r.clock(T0 + d as u64 + 5000); // far beyond the end; no chip access in between
++                        let st = r.state();
++                        assert!(st.powered_off, "{tag}: cut must have fired");
++                        assert_eq!((st.accepted, st.completed, st.interrupted, st.fired), (1, 0, 1, 1), "{tag}");
++                        let rec = st.last.as_ref().expect("record");
++                        assert_eq!(rec.source, CutSource::Scheduled, "{tag}");
++                        assert_eq!(rec.op, op, "{tag}");
++                        assert_eq!((rec.ordinal, rec.nth), (1, Some(1)), "{tag}");
++                        assert_eq!(rec.started_at, T0 * CPU, "{tag}");
++                        assert_eq!(rec.cut_at, (T0 + off as u64) * CPU, "{tag}: cut time");
++                        assert_eq!(rec.end_would_be_at, (T0 + d as u64) * CPU, "{tag}");
++                        // a cut due at the accept itself is noticed by the very next look (the transaction's own release); every other cut is noticed late, at the first look
++                        // after the clock jump, and recorded at ITS OWN time (cut_at), not the time it was noticed
++                        let noticed = if off == 0 { T0 } else { T0 + d as u64 + 5000 };
++                        assert_eq!(rec.detected_at, noticed * CPU, "{tag}: when it was noticed");
++                        assert!(rec.cut_at < rec.end_would_be_at, "{tag}");
++                        assert_eq!(rec.ranges, ranges, "{tag}");
++                        assert_eq!(st.indeterminate, ranges, "{tag}: the range is indeterminate");
++                        assert_eq!(r.c.busy_until(), None, "{tag}: no cycle is running");
++                        // CONTROL: no trigger, the same moves: the cycle completes normally
++                        let mut k = Rig::new(kind, timing, false);
++                        k.clock(T0);
++                        k.accept(op);
++                        k.clock(T0 + d as u64 + 5000);
++                        let ks = k.state();
++                        assert_eq!((ks.accepted, ks.completed, ks.interrupted, ks.powered_off), (1, 1, 0, false), "{tag}: control completes");
++                        assert!(ks.indeterminate.is_empty() && ks.last.is_none(), "{tag}: control leaves nothing indeterminate");
++                    }
++                }
++            }
++        }
++    }
++
++    /// cut one cycle before it is due is not fired; at its cycle it is; completion time is never reached first.
++    #[test]
++    fn the_cut_lands_exactly_at_its_cycle() {
++        for kind in PROFILES {
++            for op in CUTS {
++                let d = dur_us(kind, Timing::Typical, op);
++                for (at, off) in [(FaultAt::AfterUs(d - 1), d - 1), (FaultAt::AfterUs(1), 1), (FaultAt::Fraction(0.5), d / 2)] {
++                    let tag = format!("{kind:?} {op:?} {at:?}");
++                    let cut_at = (T0 + off as u64) * CPU;
++                    let mut r = Rig::new(kind, Timing::Typical, false);
++                    r.c.arm_fault(FaultSpec { op, nth: 1, at }).unwrap();
++                    r.clock(T0);
++                    r.accept(op);
++                    r.clock_cycles(cut_at - 1);
++                    let st = r.state();
++                    assert!(!st.powered_off, "{tag}: one cycle before");
++                    assert!(r.c.busy_until().is_some(), "{tag}: still running one cycle before");
++                    r.clock_cycles(cut_at);
++                    assert!(r.state().powered_off, "{tag}: fired at its cycle");
++                }
++                // a trigger at or beyond the end would be a normal completion: refused
++                let mut r = Rig::new(kind, Timing::Typical, false);
++                assert_eq!(r.c.arm_fault(FaultSpec { op, nth: 1, at: FaultAt::AfterUs(d) }), Err(FaultError::BadAt), "{op:?} afterUs = duration");
++                assert_eq!(r.c.arm_fault(FaultSpec { op, nth: 1, at: FaultAt::Fraction(1.0) }), Err(FaultError::BadAt));
++            }
++        }
++    }
++
++    /// atAccept: the cut is due at the accept itself.
++    #[test]
++    fn a_cut_at_accept_fires_at_the_next_look() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Program);
++        let st = r.state(); // same instant
++        assert!(st.powered_off);
++        let rec = st.last.unwrap();
++        assert_eq!((rec.started_at, rec.cut_at, rec.detected_at), (T0 * CPU, T0 * CPU, T0 * CPU));
++    }
++
++    // ------------------------------------------------------------------ what the record preserves (inputs, never outcomes)
++
++    #[test]
++    fn a_wrapped_page_program_records_its_latched_runs_and_both_images() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::Fraction(0.5) }).unwrap();
++        r.clock(T0);
++        r.program(0x10fe, &[0x0f, 0xf0, 0x55, 0xaa]); // wraps inside the page: positions 0xfe 0xff 0x00 0x01
++        r.clock(T0 + 10_000);
++        let rec = r.state().last.unwrap();
++        assert_eq!(rec.ranges, vec![(0x1000, 0x1001), (0x10fe, 0x10ff)], "runs in address order");
++        assert_eq!(rec.before, vec![0x4a, 0xc9, 0x50, 0xd7], "pre-image: the pattern bytes");
++        assert_eq!(rec.if_completed, vec![0x40, 0x88, 0x00, 0xd0], "what a normal completion would hold: old AND data");
++        assert_eq!((rec.unknown_before, rec.unknown_if_completed), (vec![0; 4], vec![0; 4]));
++        // nothing else is at risk: every byte outside the range equals the pattern (D33 changed only the latched positions)
++        let st = r.state();
++        assert_eq!(st.indeterminate, vec![(0x1000, 0x1001), (0x10fe, 0x10ff)]);
++        for a in 0..BYTES {
++            if !st.indeterminate.iter().any(|&(l, h)| a >= l && a <= h) {
++                assert_eq!(r.mem[a], pat(a), "byte {a:#x} outside the range was disturbed");
++            }
++        }
++    }
++
++    #[test]
++    fn a_sector_erase_records_the_unit_and_what_it_held() {
++        let mut r = Rig::new(ChipKind::Uc25hq80, Timing::Maximum, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase, nth: 1, at: FaultAt::AfterUs(100) }).unwrap();
++        r.clock(T0);
++        r.erase(0x20, 0x2abc);
++        r.clock(T0 + 100_000);
++        let rec = r.state().last.unwrap();
++        assert_eq!(rec.ranges, vec![(0x2000, 0x2fff)]);
++        assert_eq!((rec.before.len(), fnv(&rec.before)), (4096, 0xd020e7c5), "the 4 KiB the sector held, hashed independently");
++        assert!(rec.if_completed.iter().all(|&b| b == 0xff) && rec.if_completed.len() == 4096, "a completed erase leaves 0xFF");
++        assert_eq!(rec.cut_at, (T0 + 100) * CPU);
++    }
++
++    #[test]
++    fn a_chip_erase_records_the_whole_array() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::ChipErase, nth: 1, at: FaultAt::AfterUs(1) }).unwrap();
++        r.clock(T0);
++        r.chip_erase();
++        r.clock(T0 + 1_000_000);
++        let rec = r.state().last.unwrap();
++        assert_eq!(rec.ranges, vec![(0, BYTES - 1)]);
++        assert_eq!((rec.before.len(), fnv(&rec.before)), (BYTES, 0x056f9dc5), "pattern image hash, computed independently");
++        assert_eq!((rec.if_completed.len(), fnv(&rec.if_completed)), (BYTES, 0x4bec9dc5), "all 0xFF");
++        assert_eq!(r.c.indeterminate(), &[(0, BYTES - 1)]);
++    }
++
++    /// The array is not the record: after sync_cut the cut range holds the pre-image as a placeholder (labelled, not an outcome) and the list still says unknown.
++    #[test]
++    fn the_placeholder_is_the_pre_image_and_the_list_stays_the_authority() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase4k, nth: 1, at: FaultAt::Fraction(0.5) }).unwrap();
++        r.clock(T0);
++        r.erase(0x20, 0x2000);
++        assert!(r.mem[0x2000..0x3000].iter().all(|&b| b == 0xff), "D33: the array already holds the completed erase while the cycle runs");
++        r.clock(T0 + 20_000);
++        let span = r.c.sync_cut(&mut r.mem);
++        assert_eq!(span, Some((0x2000, 0x3000)), "the changed span is reported");
++        assert_eq!(fnv(&r.mem[0x2000..0x3000]), 0xd020e7c5, "placeholder = pre-image");
++        assert_eq!(r.c.sync_cut(&mut r.mem), None, "idempotent");
++        assert_eq!(r.c.indeterminate(), &[(0x2000, 0x2fff)], "still unknown to the physical chip");
++    }
++
++    // ------------------------------------------------------------------ the indeterminate set
++
++    #[test]
++    fn the_indeterminate_set_merges_and_splits_like_the_model() {
++        let mut c = Chip::new(ChipKind::Puya, Timing::Typical);
++        for (lo, hi) in [(10, 20), (30, 40), (21, 29)] {
++            c.add_indet(lo, hi);
++        }
++        assert_eq!(c.indeterminate(), &[(10, 40)], "adjacent ranges merge");
++        c.add_indet(5, 12);
++        c.add_indet(100, 100);
++        assert_eq!(c.indeterminate(), &[(5, 40), (100, 100)]);
++        c.clear_indet(20, 25);
++        assert_eq!(c.indeterminate(), &[(5, 19), (26, 40), (100, 100)], "a clear splits");
++        c.clear_indet(0, 50);
++        assert_eq!(c.indeterminate(), &[(100, 100)]);
++        c.clear_indet(100, 100);
++        assert!(c.indeterminate().is_empty());
++        assert!(!c.is_indet(100));
++    }
++
++    #[test]
++    fn a_program_over_indeterminate_bytes_leaves_them_indeterminate_and_marks_the_result_unknown() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Program); // range 0x1005..=0x1008
++        r.clock(T0 + 1);
++        r.c.power_restore().unwrap();
++        r.c.set_fault_injection(true);
++        // a second program over 0x1007..=0x100a: 0x1007 and 0x1008 are indeterminate, 0x1009 and 0x100a are known
++        r.clock(T0 + 100);
++        r.program(0x1007, &[0x3c, 0xc3, 0x0f, 0xf0]);
++        assert!(r.c.power_cut().is_ok());
++        let rec = r.state().last.unwrap();
++        assert_eq!(rec.ranges, vec![(0x1007, 0x100a)]);
++        assert_eq!(rec.unknown_before, vec![1, 1, 0, 0], "bytes that were already indeterminate stay unknown");
++        assert_eq!(rec.before, vec![0, 0, pat(0x1009), pat(0x100a)]);
++        assert_eq!(rec.unknown_if_completed, vec![1, 1, 0, 0], "the result of programming an unknown byte is unknown");
++        assert_eq!(rec.if_completed, vec![0, 0, pat(0x1009) & 0x0f, pat(0x100a) & 0xf0]);
++        assert_eq!(r.c.indeterminate(), &[(0x1005, 0x100a)], "the union, merged");
++    }
++
++    /// a completed program does not make anything known; a completed erase does (at completion).
++    #[test]
++    fn completion_updates_the_list_only_for_erases() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.set_fault_injection(true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Program);
++        r.clock(T0 + 1);
++        r.c.power_restore().unwrap();
++        let p = dur_us(ChipKind::Puya, Timing::Typical, FaultOp::Program) as u64;
++        r.clock(T0 + 5);
++        r.program(0x1005, &[0xff]); // a complete program over an indeterminate byte
++        r.clock(T0 + 5 + p + 1);
++        assert_eq!(r.state().indeterminate, &[(0x1005, 0x1008)], "a completed program leaves the range indeterminate");
++        let se = dur_us(ChipKind::Puya, Timing::Typical, FaultOp::Erase4k) as u64;
++        let t = T0 + 5 + p + 10;
++        r.clock(t);
++        r.erase(0x20, 0x1000);
++        r.clock(t + se - 1);
++        assert_eq!(r.state().indeterminate, &[(0x1005, 0x1008)], "one microsecond before the erase completes");
++        r.clock(t + se);
++        assert!(r.state().indeterminate.is_empty(), "the erase completed: its bytes are 0xFF and known");
++    }
++
++    // ------------------------------------------------------------------ reads, power state
++
++    #[test]
++    fn reads_of_indeterminate_bytes_are_counted_once_per_transaction() {
++        let mut r = Rig::new(ChipKind::Uc25hq80, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase4k, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.erase(0x20, 0x2000);
++        r.clock(T0 + 1);
++        r.c.power_restore().unwrap();
++        r.clock(T0 + 2);
++        assert_eq!(r.read(0x1000, 16), (0x1000..0x1010).map(pat).collect::<Vec<u8>>(), "a known read is the array");
++        assert_eq!(r.state().indeterminate_reads, 0, "known bytes are not counted");
++        r.read(0x1ffc, 8); // straddles into the range
++        assert_eq!(r.state().indeterminate_reads, 1);
++        r.read(0x2000, 100); // many indeterminate bytes, one transaction
++        assert_eq!(r.state().indeterminate_reads, 2);
++        r.read(0x3000, 4);
++        assert_eq!(r.state().indeterminate_reads, 2);
++    }
++
++    #[test]
++    fn a_powered_off_chip_answers_nothing_and_keeps_its_nonvolatile_status() {
++        for kind in PROFILES {
++            let mut r = Rig::new(kind, Timing::Typical, false);
++            r.clock(T0);
++            r.wren();
++            r.xfer(&[0x01, 0b0000_0100, 0x00], 0); // BP0 = 1 (non-volatile): protects only the top 64 KiB; two data bytes so the high bits (CMP) are defined on both chips
++            r.clock(T0 + 100_000); // the write-status cycle is long over
++            r.c.set_fault_injection(true);
++            r.program(0x0, &[0x12]); // outside the protected area: accepted
++            assert_eq!(r.state().accepted, 2, "{kind:?}: write-status and the program were accepted");
++            assert!(r.c.power_cut().is_ok(), "{kind:?}");
++            let base = r.state().powered_off_accesses;
++            assert_eq!(r.rdsr(), 0xff, "{kind:?}: no answer while off");
++            assert_eq!(r.state().powered_off_accesses, base + 2, "{kind:?}: the opcode and the read slot were each counted");
++            assert_eq!(r.read(0, 4), vec![0xff; 4], "{kind:?}");
++            assert_eq!(r.state().powered_off_accesses, base + 2 + 8, "{kind:?}: 4 address/opcode bytes and 4 read slots");
++            assert_eq!(r.c.power_restore(), Ok(()));
++            assert_eq!(r.c.power_restore(), Err(FaultError::NotOff));
++            assert_eq!(r.c.nv_status() & 0xffff & (BP as u32), 0b0000_0100, "{kind:?}: the BP bit survived the cut");
++            assert_eq!(r.rdsr() & (WEL | WIP) as u8, 0, "{kind:?}: WEL and WIP are clear after power returns");
++        }
++    }
++
++    #[test]
++    fn restore_applies_the_power_up_rules_and_never_resumes_the_cycle() {
++        let mut r = Rig::new(ChipKind::Uc25hq80, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase64k, nth: 1, at: FaultAt::AfterUs(10) }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Erase64k);
++        r.clock(T0 + 11);
++        r.c.power_cycle();
++        assert_eq!(r.state().power_cycle_refused, 1, "power_cycle() after a cut is refused: use power_restore()");
++        r.c.power_restore().unwrap();
++        r.clock(T0 + 3_000_000); // far beyond the cycle's normal end
++        assert_eq!(r.c.busy_until(), None, "the interrupted cycle is not resumed");
++        assert_eq!(r.rdsr() & (WEL | WIP) as u8, 0);
++        let st = r.state();
++        assert_eq!((st.accepted, st.completed, st.interrupted), (1, 0, 1));
++    }
++
++    // ------------------------------------------------------------------ arming, matching, scope
++
++    #[test]
++    fn arming_is_validated_in_the_models_order() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, false);
++        let spec = |op, nth, at| FaultSpec { op, nth, at };
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 0, FaultAt::AtAccept)), Err(FaultError::BadNth));
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 1, FaultAt::Fraction(-0.1))), Err(FaultError::BadAt));
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 1, FaultAt::Fraction(f64::NAN))), Err(FaultError::BadAt));
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 1, FaultAt::Fraction(1.0))), Err(FaultError::BadAt));
++        let pp = PUYA.typical.pp;
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 1, FaultAt::AfterUs(pp))), Err(FaultError::BadAt));
++        let t = &PUYA.typical;
++        let shortest = t.pp.min(t.se).min(t.be32).min(t.be64).min(t.ce);
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Any, 1, FaultAt::AfterUs(shortest))), Err(FaultError::BadAt), "any: bounded by the SHORTEST cycle it can match");
++        let shortest_erase = t.se.min(t.be32).min(t.be64);
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Erase, 1, FaultAt::AfterUs(shortest_erase))), Err(FaultError::BadAt), "erase: bounded by the shortest erase");
++        assert!(r.state().armed.is_none() && !r.state().journaling, "a refused arm changes nothing");
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 1, FaultAt::AfterUs(pp - 1))), Ok(()));
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 1, FaultAt::AtAccept)), Err(FaultError::AlreadyArmed));
++        assert_eq!(r.c.arm_fault(spec(FaultOp::Program, 0, FaultAt::AtAccept)), Err(FaultError::BadNth), "nth is checked first");
++        r.c.disarm_fault();
++        assert!(r.state().armed.is_none());
++        assert_eq!(FaultError::UseRestore.id(), "fault.use-restore");
++        assert_eq!(FaultOp::Erase.name(), "erase");
++    }
++
++    #[test]
++    fn arming_a_powered_off_chip_is_refused() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Program);
++        r.clock(T0 + 1);
++        assert_eq!(r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }), Err(FaultError::UseRestore));
++    }
++
++    #[test]
++    fn nth_counts_only_matching_in_scope_cycles_and_selectors_match_like_the_model() {
++        // the erase selector matches 20h, 52h and D8h; a page program and a page erase (81h, out of scope) do not
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase, nth: 2, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.program(0x1000, &[0x00]);
++        r.clock(T0 + 50_000);
++        assert_eq!(r.state().armed.unwrap().1, 0, "a page program is not an erase");
++        r.xfer(&[0x06], 0);
++        r.xfer(&[0x81, 0x00, 0x30, 0x00], 0);
++        r.clock(T0 + 200_000);
++        assert_eq!(r.state().armed.unwrap().1, 0, "81h is out of scope: never matched");
++        r.erase(0x20, 0x4000); // first matching erase: counted, not cut
++        r.clock(T0 + 1_000_000);
++        let st = r.state();
++        assert_eq!((st.armed.unwrap().1, st.powered_off, st.completed), (1, false, 3), "the first erase completed normally");
++        r.erase(0x52, 0x8000); // second: cut at accept
++        let st = r.state();
++        assert!(st.powered_off, "the second matching cycle is cut");
++        let rec = st.last.unwrap();
++        assert_eq!((rec.op, rec.nth, rec.ordinal), (FaultOp::Erase32k, Some(2), 4), "4th cycle accepted overall: program, page erase, sector erase, block erase");
++        assert_eq!(st.accepted, 4);
++    }
++
++    #[test]
++    fn write_status_and_page_erase_are_never_cut_and_never_silently_completed() {
++        for kind in PROFILES {
++            let mut r = Rig::new(kind, Timing::Typical, true);
++            r.c.set_fault_injection(true);
++            r.clock(T0);
++            r.wren();
++            r.xfer(&[0x01, 0x00, 0x00], 0); // WRSR cycle (two data bytes: all status bits defined on both chips)
++            assert_eq!(r.c.power_cut(), Err(FaultError::OutOfScope), "{kind:?}: WRSR");
++            r.clock(T0 + 1_000_000);
++            assert_eq!(r.c.busy_until(), None, "{kind:?}: the refused cut left the cycle to complete");
++            r.erase(0x81, 0x1000);
++            assert_eq!(r.c.power_cut(), Err(FaultError::OutOfScope), "{kind:?}: page erase");
++            assert!(!r.state().powered_off);
++            r.clock(T0 + 2_000_000);
++            assert_eq!(r.c.power_cut(), Err(FaultError::NoCycle), "{kind:?}: nothing running");
++            let st = r.state();
++            assert_eq!((st.accepted, st.completed, st.interrupted), (2, 2, 0), "{kind:?}: both completed normally");
++        }
++    }
++
++    #[test]
++    fn a_harness_cut_needs_journaling_and_returns_the_record_of_the_cycle() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.clock(T0);
++        r.accept(FaultOp::Erase32k); // accepted while fault injection is off: nothing was journaled
++        assert_eq!(r.c.power_cut(), Err(FaultError::NotEnabled), "refused, not faked");
++        r.clock(T0 + 10_000_000);
++        assert_eq!(r.c.busy_until(), None, "and the cycle completes normally");
++        r.c.set_fault_injection(true);
++        let t = T0 + 10_000_001;
++        r.clock(t);
++        let ranges = r.accept(FaultOp::Erase4k);
++        r.clock(t + 1234);
++        let rec = r.c.power_cut().unwrap();
++        assert_eq!((rec.source, rec.op, rec.nth, rec.ranges.clone()), (CutSource::Harness, FaultOp::Erase4k, None, ranges));
++        assert_eq!((rec.started_at, rec.cut_at, rec.detected_at), (t * CPU, (t + 1234) * CPU, (t + 1234) * CPU));
++        assert_eq!(r.c.power_cut(), Err(FaultError::AlreadyOff));
++    }
++
++    #[test]
++    fn a_cut_already_due_is_the_one_that_happened() {
++        let mut r = Rig::new(ChipKind::Uc25hq80, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase64k, nth: 1, at: FaultAt::AfterUs(500) }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Erase64k);
++        r.clock(T0 + 10_000); // the scheduled cut (T0 + 500) is long due
++        let rec = r.c.power_cut().unwrap();
++        assert_eq!((rec.source, rec.cut_at), (CutSource::Scheduled, (T0 + 500) * CPU), "the harness call returns the scheduled cut, it does not make a second one");
++        assert_eq!(r.state().interrupted, 1);
++    }
++
++    #[test]
++    fn the_trigger_is_single_shot() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Program);
++        r.clock(T0 + 1);
++        assert!(r.state().powered_off && r.state().armed.is_none(), "fired and disarmed");
++        r.c.power_restore().unwrap();
++        r.clock(T0 + 100);
++        r.program(0x4000, &[0x00]);
++        r.clock(T0 + 100_000);
++        let st = r.state();
++        assert_eq!((st.accepted, st.completed, st.interrupted), (2, 1, 1), "the next program completes normally");
++    }
++
++    // ------------------------------------------------------------------ determinism and disabled behaviour
++
++    fn scripted(r: &mut Rig) -> (u32, u32, Vec<u8>, u64) {
++        let mut t = 100u64;
++        let mut seq = Vec::new();
++        r.clock(t);
++        for step in 0..14u32 {
++            let a = 0x1000 * (step + 1);
++            match step % 5 {
++                0 => r.program(a, &[0xa5, 0x5a, step as u8]),
++                1 => r.erase(0x20, a),
++                2 => r.erase(0x52, a & !0x7fff),
++                3 => r.erase(0xd8, a & !0xffff),
++                _ => r.erase(0x81, a),
++            }
++            seq.push(r.rdsr());
++            t += 3_000;
++            r.clock(t);
++            seq.push(r.rdsr());
++            t += 2_000_000;
++            r.clock(t);
++            r.xfer(&[0x35], 1);
++            seq.extend(r.read(a, 3));
++        }
++        let st = r.state();
++        (fnv(&r.mem), st.completed, seq, r.c.busy_until().unwrap_or(0))
++    }
++
++    /// Normal-operation regression: with fault injection never armed, with it armed and never matching, and with journaling on but nothing armed, a long scripted run
++    /// of programs and erases (including 81h) yields byte-identical results: array, status reads, reads, counters. (The oracle transcripts, which are unchanged, are
++    /// the wider regression against the reference model.)
++    #[test]
++    fn disabled_fault_injection_changes_nothing() {
++        for kind in PROFILES {
++            let mut plain = Rig::new(kind, Timing::Typical, true);
++            let want = scripted(&mut plain);
++            assert!(!plain.state().journaling && plain.state().last.is_none());
++            assert_eq!(plain.state().completed, 14, "{kind:?}: every cycle completed");
++
++            let mut journaling = Rig::new(kind, Timing::Typical, true);
++            journaling.c.set_fault_injection(true);
++            assert_eq!(scripted(&mut journaling), want, "{kind:?}: journaling on, nothing armed");
++
++            let mut never = Rig::new(kind, Timing::Typical, true);
++            never.c.arm_fault(FaultSpec { op: FaultOp::ChipErase, nth: 1, at: FaultAt::AtAccept }).unwrap(); // no chip erase in the script
++            assert_eq!(scripted(&mut never), want, "{kind:?}: armed, never matching");
++            assert_eq!(never.state().armed.unwrap().1, 0);
++
++            let mut disarmed = Rig::new(kind, Timing::Typical, true);
++            disarmed.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }).unwrap();
++            disarmed.c.disarm_fault();
++            assert_eq!(scripted(&mut disarmed), want, "{kind:?}: armed then disarmed");
++        }
++    }
++
++    /// At a very low clock whole-cycle rounding could put the cut on the cycle the cycle ends: the cut is clamped to the cycle before it, so completion can never win.
++    /// (At the SoC's 100 MHz this cannot happen; the clamp exists for correctness at any `hz`.)
++    #[test]
++    fn the_cut_stays_before_the_end_even_at_a_very_low_clock() {
++        let hz = 1000; // 1 kHz: a microsecond is a millisecond's worth of rounding
++        let mut c = Chip::new(ChipKind::Puya, Timing::Typical);
++        let mut mem = vec![0xffu8; BYTES];
++        c.set_clock(0, hz);
++        c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AfterUs(PUYA.typical.pp - 1) }).unwrap();
++        for tx in [&[0x06][..], &[0x02, 0, 0x10, 0, 0x55][..]] {
++            c.select();
++            for &b in tx {
++                c.transfer(&mem, b);
++            }
++            c.release(&mut mem, 0);
++        }
++        // the program takes 2000 us = 2 cycles at 1 kHz; afterUs(1999) rounds up to 2 cycles = the end: the clamp makes it cycle 1
++        assert_eq!(c.busy_until(), Some(2));
++        c.set_clock(1, hz);
++        let st = c.fault_state();
++        assert!(st.powered_off, "cut at cycle 1, before the end at cycle 2");
++        assert_eq!((st.last.as_ref().unwrap().cut_at, st.last.as_ref().unwrap().end_would_be_at, st.completed), (1, 2, 0));
++    }
++
++    /// The `erase` selector is the three sector/block erases: a chip erase is a different kind and is neither counted nor cut by it.
++    #[test]
++    fn the_erase_selector_does_not_match_a_chip_erase() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, false);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::ChipErase);
++        r.clock(T0 + 100_000);
++        let st = r.state();
++        assert_eq!((st.armed.unwrap().1, st.powered_off, st.completed), (0, false, 1), "the chip erase completed and was not counted");
++        r.accept(FaultOp::Erase4k);
++        assert!(r.state().powered_off, "the first sector erase is the one cut");
++    }
++
++    /// A harness cut is not a scheduled one: it carries no `nth`, even while a trigger for a later cycle is armed.
++    #[test]
++    fn a_harness_cut_carries_no_nth_even_while_a_trigger_is_armed() {
++        let mut r = Rig::new(ChipKind::Uc25hq80, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Erase64k, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Program); // not matched by the trigger; journaled because arming turned journaling on
++        r.clock(T0 + 10);
++        let rec = r.c.power_cut().unwrap();
++        assert_eq!((rec.source, rec.nth), (CutSource::Harness, None));
++        assert!(r.state().armed.is_none(), "the cut disarmed the trigger");
++    }
++
++    /// The placeholder never touches a byte whose pre-image is unknown: those keep whatever the array holds, and only the list speaks for them.
++    #[test]
++    fn the_placeholder_leaves_unknown_pre_image_bytes_alone() {
++        let mut r = Rig::new(ChipKind::Puya, Timing::Typical, true);
++        r.c.arm_fault(FaultSpec { op: FaultOp::Program, nth: 1, at: FaultAt::AtAccept }).unwrap();
++        r.clock(T0);
++        r.accept(FaultOp::Program); // 0x1005..=0x1008 indeterminate
++        r.clock(T0 + 1);
++        r.c.power_restore().unwrap();
++        r.clock(T0 + 100);
++        r.program(0x1007, &[0x3c, 0xc3, 0x0f, 0xf0]); // D33: the array now holds pre & latch at the four positions
++        let (held7, held8) = (r.mem[0x1007], r.mem[0x1008]);
++        let (known9, known10) = (pat(0x1009), pat(0x100a));
++        assert_eq!((r.mem[0x1009], r.mem[0x100a]), (known9 & 0x0f, known10 & 0xf0), "the completed image is in the array until the cut is synced");
++        r.c.power_cut().unwrap();
++        r.c.sync_cut(&mut r.mem);
++        assert_eq!((r.mem[0x1007], r.mem[0x1008]), (held7, held8), "unknown pre-image bytes are left alone");
++        assert_eq!((r.mem[0x1009], r.mem[0x100a]), (known9, known10), "known pre-image bytes are put back");
++    }
++
++    /// Determinism: the same flash, profile, timing, trigger and clock moves give identical records, lists and memory.
++    #[test]
++    fn identical_runs_give_identical_records_and_memory() {
++        for kind in PROFILES {
++            let run = || {
++                let mut r = Rig::new(kind, Timing::Maximum, true);
++                r.c.arm_fault(FaultSpec { op: FaultOp::Erase, nth: 3, at: FaultAt::Fraction(1.0 / 3.0) }).unwrap();
++                let mut t = 100u64;
++                for i in 0..6u32 {
++                    r.clock(t);
++                    if r.state().powered_off {
++                        break;
++                    }
++                    r.erase(0x20, 0x1000 * (i + 1));
++                    t += 700_000;
++                }
++                r.clock(t + 10);
++                let st = r.state();
++                (st.clone(), fnv(&r.mem))
++            };
++            let (a, b) = (run(), run());
++            assert!(a.0.powered_off, "{kind:?}: the 3rd erase was cut");
++            assert_eq!(a, b, "{kind:?}: bit-for-bit repeatable");
++        }
++    }
++}
 diff --git a/crates/fm1-soc/src/spiflash.rs b/crates/fm1-soc/src/spiflash.rs
 index 9c063e6..d0e3aee 100644
 --- a/crates/fm1-soc/src/spiflash.rs
@@ -999,18 +2250,21 @@ index 9c063e6..d0e3aee 100644
          if i == 0 {
 diff --git a/crates/fm1-soc/tests/chip_oracle.rs b/crates/fm1-soc/tests/chip_oracle.rs
 new file mode 100644
-index 0000000..617ca66
+index 0000000..2ddd85a
 --- /dev/null
 +++ b/crates/fm1-soc/tests/chip_oracle.rs
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,488 @@
 +//! Replays oracle transcripts (generated from the Stage A reference model, ci/machine/chipmodel.mjs) against
 +//! the Rust chip state machine, two ways:
 +//!   * `chip_driver`: `Chip` directly (select / transfer / release), including CS rising mid-byte;
 +//!   * `soc_driver`: through the SoC's registers (GPIO PD0 chip select, SPI0 BUF/CON) with the SoC's
 +//!     cycle counter as the clock: the path the firmware's CPU takes.
 +//! The transcript file is named by FM1_CHIP_ORACLE (see gen-transcripts.mjs for the line formats).
++//! Scenarios marked `fault=1` (gen-transcripts.mjs --with-fault; interrupted operations, Component 5 Stage 5C-1) are replayed by the chip driver only: arming and
++//! firing a cut needs the SoC scheduling that arrives in 5C-2, so the register driver skips them.
 +
 +use fm1_core::Bus;
++use fm1_soc::spichip::{FaultAt, FaultOp, FaultSpec};
 +use fm1_soc::{Chip, ChipKind, Soc, Timing, FLASH_SIZE};
 +
 +const SPI0: u32 = 0x11c00;
@@ -1044,16 +2298,43 @@ index 0000000..617ca66
 +    fn mem(&self) -> &[u8];
 +    fn wip(&mut self) -> bool;
 +    fn take_log(&mut self) -> Vec<&'static str>;
++    /// the chip driver, for the interrupted-operation line kinds; None for a driver that cannot arm a cut
++    fn as_chip(&mut self) -> Option<&mut ChipDrv> {
++        None
++    }
++    /// hash of the array as the oracle knows it (bytes the chip lists as indeterminate read as 0, like the model's peekKnown)
++    fn known_hash(&mut self) -> u32 {
++        fnv(self.mem())
++    }
 +}
 +
 +struct ChipDrv {
 +    chip: Chip,
 +    mem: Vec<u8>,
 +    hz: u64,
++    /// a `fault=1` scenario: the clock moves through `sync_cut` (settle, and the labelled placeholder after a cut), as the SoC will in 5C-2
++    fault: bool,
 +}
 +impl Drv for ChipDrv {
 +    fn set_cycles(&mut self, c: u64) {
 +        self.chip.set_clock(c, self.hz);
++        if self.fault {
++            self.chip.sync_cut(&mut self.mem);
++        }
++    }
++    fn as_chip(&mut self) -> Option<&mut ChipDrv> {
++        Some(self)
++    }
++    fn known_hash(&mut self) -> u32 {
++        let ranges = self.chip.indeterminate().to_vec();
++        if ranges.is_empty() {
++            return fnv(&self.mem);
++        }
++        let mut m = self.mem.clone();
++        for (lo, hi) in ranges {
++            m[lo..=hi].fill(0);
++        }
++        fnv(&m)
 +    }
 +    fn tx(&mut self, tx: &[u8], read: usize, partial: u8) -> (Vec<u8>, Option<u8>) {
 +        self.chip.select();
@@ -1137,6 +2418,7 @@ index 0000000..617ca66
 +    hashes: usize,
 +    wip_checks: usize,
 +    power: usize,
++    fault_steps: usize,
 +    mismatches: Vec<String>,
 +}
 +
@@ -1148,6 +2430,7 @@ index 0000000..617ca66
 +    let mut rep = Report::default();
 +    let mut drv: Option<Box<dyn Drv>> = None;
 +    let (mut name, mut hz, mut us_total) = (String::new(), 100_000_000u64, 0u64);
++    let mut skip = false;
 +    let mut bad = |rep: &mut Report, name: &str, ln: usize, what: String| {
 +        if rep.mismatches.len() < 25 {
 +            rep.mismatches.push(format!("{name} line {ln}: {what}"));
@@ -1159,6 +2442,10 @@ index 0000000..617ca66
 +    for (i, line) in text.lines().enumerate() {
 +        let ln = i + 1;
 +        let f: Vec<&str> = line.split(' ').collect();
++        if skip {
++            skip = f[0] != "E"; // a scenario this driver cannot replay: ignore it up to its end
++            continue;
++        }
 +        match f[0] {
 +            "S" => {
 +                name = f[1].to_string();
@@ -1168,7 +2455,17 @@ index 0000000..617ca66
 +                let (wp, pat) = (f[5] == "1", f[6] == "pat");
 +                // an optional 4Bh unique-ID fixture: uid=<32 hex digits> (a test fixture; no real device ID)
 +                let uid: Option<[u8; 16]> = f.get(7).and_then(|s| s.strip_prefix("uid=")).map(|h| unhex(h).try_into().expect("16 bytes"));
-+                drv = Some(make(kind, timing, hz, wp, pat, uid));
++                let mut d = make(kind, timing, hz, wp, pat, uid);
++                if f.iter().any(|x| *x == "fault=1") {
++                    match d.as_chip() {
++                        Some(c) => c.fault = true,
++                        None => {
++                            skip = true;
++                            continue;
++                        }
++                    }
++                }
++                drv = Some(d);
 +                us_total = 0;
 +                rep.scenarios += 1;
 +            }
@@ -1188,7 +2485,14 @@ index 0000000..617ca66
 +                let (out, unk) = d.tx(&tx, read, partial);
 +                let log = d.take_log();
 +                let r: Vec<&str> = res.split(' ').collect();
-+                if r[0] == "OK" {
++                if r[0] == "OFF" {
++                    rep.fault_steps += 1;
++                    let off = d.as_chip().is_some_and(|c| c.chip.fault_state().powered_off);
++                    if !off || !out.iter().all(|&b| b == 0xff) || !log.is_empty() {
++                        nbad += 1;
++                        bad(&mut rep, &name, ln, format!("tx {} oracle says the chip is powered off: chip powered_off {off}, answered {out:02x?}, events {log:?}", f[4]));
++                    }
++                } else if r[0] == "OK" {
 +                    if !log.is_empty() {
 +                        nbad += 1;
 +                        bad(&mut rep, &name, ln, format!("oracle OK, chip recorded events {log:?}"));
@@ -1244,7 +2548,7 @@ index 0000000..617ca66
 +            "D" => {
 +                let d = drv.as_mut().unwrap();
 +                rep.hashes += 1;
-+                let h = fnv(d.mem());
++                let h = d.known_hash();
 +                if format!("{h:08x}") != f[1] {
 +                    nbad += 1;
 +                    bad(&mut rep, &name, ln, format!("final array hash: chip {h:08x}, oracle {}", f[1]));
@@ -1258,6 +2562,81 @@ index 0000000..617ca66
 +                    bad(&mut rep, &name, ln, format!("WIP: chip {}, oracle {}", !(f[1] == "1"), f[1]));
 +                }
 +            }
++            "J" => {
++                drv.as_mut().unwrap().as_chip().unwrap().chip.set_fault_injection(true);
++            }
++            "F" => {
++                let c = drv.as_mut().unwrap().as_chip().unwrap();
++                let op = match f[1] {
++                    "program" => FaultOp::Program,
++                    "erase4k" => FaultOp::Erase4k,
++                    "erase32k" => FaultOp::Erase32k,
++                    "erase64k" => FaultOp::Erase64k,
++                    "erase" => FaultOp::Erase,
++                    "chip-erase" => FaultOp::ChipErase,
++                    "any" => FaultOp::Any,
++                    other => panic!("bad fault op {other}"),
++                };
++                let at = match f[3] {
++                    "accept" => FaultAt::AtAccept,
++                    "fraction" => FaultAt::Fraction(f[4].parse().unwrap()),
++                    "afterUs" => FaultAt::AfterUs(f[4].parse().unwrap()),
++                    other => panic!("bad fault trigger {other}"),
++                };
++                rep.fault_steps += 1;
++                if let Err(e) = c.chip.arm_fault(FaultSpec { op, nth: f[2].parse().unwrap(), at }) {
++                    nbad += 1;
++                    bad(&mut rep, &name, ln, format!("arm_fault refused a trigger the oracle accepted: {}", e.id()));
++                }
++            }
++            "C" | "R" => {
++                let c = drv.as_mut().unwrap().as_chip().unwrap();
++                let got = if f[0] == "C" { c.chip.power_cut().map(|_| ()) } else { c.chip.power_restore() };
++                c.chip.sync_cut(&mut c.mem);
++                let got = match got {
++                    Ok(()) => "OK".to_string(),
++                    Err(e) => format!("ERR {}", e.id()),
++                };
++                rep.fault_steps += 1;
++                if got != line[5..] {
++                    nbad += 1;
++                    bad(&mut rep, &name, ln, format!("{}: chip {got}, oracle {}", f[0], &line[5..]));
++                }
++            }
++            "Q" | "K" => {
++                let c = drv.as_mut().unwrap().as_chip().unwrap();
++                let st = c.chip.fault_state();
++                let rt = |rs: &[(usize, usize)]| if rs.is_empty() { "-".to_string() } else { rs.iter().map(|(l, h)| format!("{l}-{h}")).collect::<Vec<_>>().join(",") };
++                let got = if f[0] == "Q" {
++                    format!("{} {} {} {} {} {} {}", st.powered_off as u8, st.accepted, st.completed, st.interrupted, st.fired, st.indeterminate_reads, rt(&st.indeterminate))
++                } else {
++                    match &st.last {
++                        None => "no record".to_string(),
++                        Some(r) => format!(
++                            "{} {} {} {} {} {} {} {} {} {} {:08x} {:08x} {:08x} {:08x}",
++                            r.op.name(),
++                            if r.source == fm1_soc::spichip::CutSource::Scheduled { "scheduled" } else { "harness" },
++                            r.ordinal,
++                            r.nth.map_or("-".to_string(), |n| n.to_string()),
++                            r.started_at,
++                            r.cut_at,
++                            r.end_would_be_at,
++                            r.detected_at,
++                            rt(&r.ranges),
++                            r.before.len(),
++                            fnv(&r.before),
++                            fnv(&r.unknown_before),
++                            fnv(&r.if_completed),
++                            fnv(&r.unknown_if_completed)
++                        ),
++                    }
++                };
++                rep.fault_steps += 1;
++                if got != line[2..] {
++                    nbad += 1;
++                    bad(&mut rep, &name, ln, format!("{}: chip `{got}`, oracle `{}`", f[0], &line[2..]));
++                }
++            }
 +            other => panic!("unknown transcript line kind {other}"),
 +        }
 +    }
@@ -1268,8 +2647,8 @@ index 0000000..617ca66
 +fn run(make: &Maker, label: &str) {
 +    let r = replay(make);
 +    eprintln!(
-+        "{label}: {} scenarios, {} transactions, {} array checks, {} final hashes, {} WIP checks, {} power cycles; mismatches: {}",
-+        r.scenarios, r.transactions, r.array_checks, r.hashes, r.wip_checks, r.power, r.mismatches.len()
++        "{label}: {} scenarios, {} transactions, {} array checks, {} final hashes, {} WIP checks, {} power cycles, {} fault steps; mismatches: {}",
++        r.scenarios, r.transactions, r.array_checks, r.hashes, r.wip_checks, r.power, r.fault_steps, r.mismatches.len()
 +    );
 +    assert!(r.mismatches.is_empty(), "{label}: oracle mismatches:\n{}", r.mismatches.join("\n"));
 +    assert!(r.scenarios > 300 && r.transactions > 50_000, "{label}: transcript too small to mean anything");
@@ -1283,7 +2662,7 @@ index 0000000..617ca66
 +            let mut chip = Chip::new(kind, timing);
 +            chip.set_wp(wp);
 +            chip.set_uid(uid);
-+            Box::new(ChipDrv { chip, mem: if pat { pattern() } else { vec![0xff; FLASH_SIZE] }, hz })
++            Box::new(ChipDrv { chip, mem: if pat { pattern() } else { vec![0xff; FLASH_SIZE] }, hz, fault: false })
 +        },
 +        "chip driver",
 +    );
