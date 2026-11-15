@@ -34,6 +34,8 @@ A verdict is a statement about a **window** of emulated time; each scenario fixe
 
 Not used on the shipped engine: all-zero flash and `zero:0x4000` on `frasil`/`modelar` (the shipped engine still has defect D-1 and aborts: pinned by the existing D-1 tests), and `zero:0x4000` on firmware that run blank (about 10 s of host time each).
 
+**Idle reset (quick).** A healthy quadro-fm1 power-cycled while running (no write in flight) boots again with the same flash, no damage, the same screen colours and the same picture (a deterministic reset of a healthy machine). It does not involve any write; `powerCycle()` and writes are the next section.
+
 **Reset control (quick).** A machine halted by the damaged flash (Coqui, `zero:0x4000`) is power-cycled with no corruption: it carries the same damaged flash and halts again at the same instant. A reset is not a recovery.
 
 **Interrupted cycles, chip-profile engine (full tier; SKIPPED without the engine).** Each is one row of `docs/dev/fault-survey.json` (Puya, typical timing, 3 s reboot watch with the survey's input script), replayed exactly: the report's `reportSha256` must equal the committed row's. The outcome policy is an **explicit synthetic input**; the datasheets do not say what an interrupted cycle leaves in the array. `old` rows are controls (the cut had no effect), not physical outcomes. Each also checks reinstall recovery: a fresh Puya machine from the intact package, no unknown bytes, boots in 1.0 s.
@@ -58,7 +60,7 @@ Not used on the shipped engine: all-zero flash and `zero:0x4000` on `frasil`/`mo
 
 | Tier | Runs | Needs |
 |---|---|---|
-| Quick (`npm test`, 20 s hard limit) | catalogue checks, verdict truth table, damage-state logic, fixture = survey subset and agrees with the catalogue, 3 corrupted-flash scenarios, reset control (9 tests, about 3 s) | shipped engine only |
+| Quick (`npm test`, 20 s hard limit) | catalogue checks, verdict truth table, damage-state logic, fixture = survey subset and agrees with the catalogue, 3 corrupted-flash scenarios, idle reset, reset control (10 tests, about 4 s) | shipped engine only |
 | Full | the other 7 corrupted-flash scenarios, determinism, window dependence | shipped engine only |
 | Full, chip engine | 9 interrupted-cycle scenarios + the `powerCycle()` limitation (10 tests) | the built chip-profile engine; **SKIPPED, never passed, without it** |
 

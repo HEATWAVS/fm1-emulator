@@ -167,6 +167,23 @@ export function registerRecoveryQuickTests(testQuick, { engine }) {
     });
   }
 
+  T("a normal idle reset: a healthy machine power-cycled while running boots again with the same flash, the same screen and no damage (quadro-fm1; no write in flight)", () => {
+    const pkg = catalogPackage("quadro-fm1");
+    const m = Fm1Machine.boot(engine, pkg, { usb: false });
+    const first = watch(m, { seconds: 0.2 });
+    assert.equal(first.verdict, "booted");
+    assert.equal(m.halted || m.powerCut, false, "running and idle: not halted, no power cut (the shipped engine has instant writes, so no cycle is ever in flight)");
+    const hash = m.flashHash();
+    const again = m.powerCycle();
+    assert.equal(again.flashHash(), hash, "the reset carries the flash over unchanged");
+    assert.equal(again.changedSectors().length, 0, "no damage, nothing differs from the package");
+    const second = watch(again, { seconds: 0.2 });
+    assert.equal(isSelfRecovery(second), true, "booted with a non-blank screen again");
+    assert.equal(second.final.lcdColours, first.final.lcdColours, "the same screen colours");
+    assert.equal(second.final.lcdHash, first.final.lcdHash, "the same picture: a reset of a healthy machine is deterministic");
+    assert.equal(again.faultOutcome, null);
+  });
+
   T("a reboot of a damaged flash does not repair it: the machine halts again, with the same flash (coqui, 0x4000 zeroed), and only the intact package boots", () => {
     const s = CORRUPTION_SCENARIOS.find((x) => x.id === "coqui-boot-sector-zeroed");
     const pkg = catalogPackage(s.firmware);
