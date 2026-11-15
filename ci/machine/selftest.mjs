@@ -34,6 +34,7 @@ import { registerFirmwareTests } from "./firmwaretests.mjs";
 import { registerFaultLiveTests } from "./faultlivetests.mjs";
 import { registerFaultHarnessQuickTests, registerFaultHarnessLiveTests } from "./faultharnesstests.mjs";
 import { registerFaultSurveyQuickTests, registerFaultSurveyLiveTests } from "./faultsurveytests.mjs";
+import { registerRecoveryQuickTests, registerRecoveryFullTests, registerRecoveryLiveTests } from "./recoverytests.mjs";
 import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions, parseFlashUid, uidWords } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
@@ -620,6 +621,9 @@ registerFaultHarnessQuickTests(test.quick);   // the fault-injection harness API
 registerFaultLiveTests(test.chip, { chipEngine, pkg: FELUCCA, quadro: QUADRO });   // fault-injection exports and clock syncs (Component 5, Stage 5C-3), full tier, needs the chip engine
 registerFaultHarnessLiveTests(test.chip, { chipEngine, shipped: engine, pkg: FELUCCA, quadro: QUADRO });
 registerFaultSurveyLiveTests(test.chip, { chipEngine, shipped: engine, pkg: FELUCCA, quadro: QUADRO });   // the harness API over real firmware (Stage 5D), full tier, needs the chip engine   // firmware behaviour under the profiles (Stage C4), full tier, needs the chip engine
+registerRecoveryQuickTests(test.quick, { engine });   // recovery scenarios, corrupted flash on the shipped engine + the committed survey fixture (Component 6), quick tier
+registerRecoveryFullTests(test, { engine });   // the rest of the corrupted-flash catalogue on the shipped engine (Component 6), full tier, no chip engine needed
+registerRecoveryLiveTests(test.chip, { chipEngine });   // interrupted-cycle recovery scenarios on the chip-profile engine (Component 6), full tier, SKIPPED without it
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance, incl. fault injection), quick tier
 registerFaultRegressionTests(test, { genPath: resolve(import.meta.dirname, "../engine/gen-transcripts.mjs") });   // full tier: transcripts unchanged with faults disabled
 

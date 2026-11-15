@@ -1,0 +1,1674 @@
+{
+ "version": 1,
+ "source": "docs/dev/fault-survey.json",
+ "note": "Derived by ci/machine/recoveryfixture.mjs from the committed fault survey; never edit by hand. Synthetic test input, not a prediction of the physical chip.",
+ "surveyVersion": 1,
+ "disclaimer": "Synthetic test input, not a prediction of the physical chip: the datasheets do not specify the array after an interrupted cycle, and a finite set of fills does not exhaust the possible physical outcomes.",
+ "engine": {
+  "sha256": "28dacdb40cee4f7620f306f761a35b820116b62981874dfeb657afe269ba764e"
+ },
+ "surveyConfig": {
+  "chips": [
+   "puya",
+   "uc25hq80"
+  ],
+  "timing": "typical",
+  "rebootMs": 3000,
+  "inputs": true
+ },
+ "units": {
+  "felucca/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 0,
+     "completed": 0,
+     "flashRevision": 0,
+     "lcdHash": "d8474f91fb5dac6d"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "2cd19aafdc5ad64f",
+     "lcdColours": 27,
+     "flashChanges": 0
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "crashed",
+      "trap": null,
+      "halted": true,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "blank",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     }
+    }
+   }
+  },
+  "quadro-fm1/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 3,
+     "completed": 3,
+     "flashRevision": 3,
+     "lcdHash": "d25dc229b6bb8fe0"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "6d2ac5b6ae79b291",
+     "lcdColours": 180,
+     "flashChanges": 3
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "booted",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "blank",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     }
+    }
+   }
+  },
+  "coqui/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 1212,
+     "completed": 1212,
+     "flashRevision": 1212,
+     "lcdHash": "0b6d69389fd53d6e"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "0208e747cd8daaf7",
+     "lcdColours": 7,
+     "flashChanges": 1057
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "booted",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "crashed",
+      "trap": null,
+      "halted": true,
+      "powerCut": false
+     }
+    }
+   }
+  },
+  "chipbox/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 52,
+     "completed": 52,
+     "flashRevision": 52,
+     "lcdHash": "4463705bbbea465a"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "d62d84821c607b68",
+     "lcdColours": 10,
+     "flashChanges": 3
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "crashed",
+      "trap": null,
+      "halted": true,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "blank",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     }
+    }
+   }
+  },
+  "elixir/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 0,
+     "completed": 0,
+     "flashRevision": 0,
+     "lcdHash": "1ad7c2c669b4f9c8"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "0be5944bcef1b0af",
+     "lcdColours": 91,
+     "flashChanges": 0
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "crashed",
+      "trap": null,
+      "halted": true,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "blank",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     }
+    }
+   }
+  },
+  "melodee/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 6,
+     "completed": 6,
+     "flashRevision": 6,
+     "lcdHash": "e84637abe8bd1d00"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "df37bc0e02e7fe65",
+     "lcdColours": 36,
+     "flashChanges": 6
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "blank",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "booted",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     }
+    }
+   }
+  },
+  "cord/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 2,
+     "completed": 2,
+     "flashRevision": 2,
+     "lcdHash": "1693b5916bd882ff"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "763eca202362c0b3",
+     "lcdColours": 12,
+     "flashChanges": 2
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "blank",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "booted",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     }
+    }
+   }
+  },
+  "aurora/puya": {
+   "controls": {
+    "noFault": {
+     "verdict": "booted",
+     "halted": false,
+     "powerCut": false,
+     "status": "running",
+     "accepted": 0,
+     "completed": 0,
+     "flashRevision": 0,
+     "lcdHash": "775fb0249ac0aabe"
+    },
+    "freshBoot": {
+     "verdict": "booted",
+     "lcdHash": "faca2d274456cfd8",
+     "lcdColours": 11,
+     "flashChanges": 0
+    },
+    "ordinary": {
+     "erase:0x20000": {
+      "verdict": "booted",
+      "trap": null,
+      "halted": false,
+      "powerCut": false
+     },
+     "zero:0x4000": {
+      "verdict": "crashed",
+      "trap": null,
+      "halted": true,
+      "powerCut": false
+     }
+    }
+   }
+  }
+ },
+ "rows": [
+  {
+   "id": "coqui/puya/fw/erase4k@1/f0.5/ff",
+   "unit": "coqui/puya",
+   "firmware": "coqui",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "erase4k",
+   "cycle": 1,
+   "point": "f0.5",
+   "policy": "ff",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "ff"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 38225340,
+    "actualCutCycle": 38225340,
+    "op": "erase4k",
+    "bytesAtRisk": 4096,
+    "ranges": 1,
+    "firstRange": [
+     618496,
+     622591
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 7,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 4096,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 1057,
+    "outcomeHash": "f47a8ec3e9aff231",
+    "lcdHash": "0208e747cd8daaf7",
+    "flashHash": "b62df4b3b1f4954b",
+    "screenSameAsOldBound": true,
+    "flashSameAsOldBound": true
+   },
+   "reportSha256": "c5bc8fffe73cbaa03736334cbc3676e4887b035ff5bcddf69f3104c8aac6d261"
+  },
+  {
+   "id": "coqui/puya/fw/erase4k@1/f0.5/new",
+   "unit": "coqui/puya",
+   "firmware": "coqui",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "erase4k",
+   "cycle": 1,
+   "point": "f0.5",
+   "policy": "new",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "new"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 38225340,
+    "actualCutCycle": 38225340,
+    "op": "erase4k",
+    "bytesAtRisk": 4096,
+    "ranges": 1,
+    "firstRange": [
+     618496,
+     622591
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 7,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 4096,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 1057,
+    "outcomeHash": "f47a8ec3e9aff231",
+    "lcdHash": "0208e747cd8daaf7",
+    "flashHash": "b62df4b3b1f4954b",
+    "screenSameAsOldBound": true,
+    "flashSameAsOldBound": true
+   },
+   "reportSha256": "13c1f4de466a7461698ca3acd2329c6a1ac27170fa32dca381ab55df0efc5b03"
+  },
+  {
+   "id": "coqui/puya/fw/erase4k@1/f0.5/old",
+   "unit": "coqui/puya",
+   "firmware": "coqui",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "erase4k",
+   "cycle": 1,
+   "point": "f0.5",
+   "policy": "old",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "old"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 38225340,
+    "actualCutCycle": 38225340,
+    "op": "erase4k",
+    "bytesAtRisk": 4096,
+    "ranges": 1,
+    "firstRange": [
+     618496,
+     622591
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 7,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 4096,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 1057,
+    "outcomeHash": "f47a8ec3e9aff231",
+    "lcdHash": "0208e747cd8daaf7",
+    "flashHash": "b62df4b3b1f4954b",
+    "screenSameAsOldBound": null,
+    "flashSameAsOldBound": null
+   },
+   "reportSha256": "6053ed823dcb1680119e655db2f8fb0b3eb1bbc85d8c29690db5e4d5e2c929d1"
+  },
+  {
+   "id": "coqui/puya/fw/erase4k@1/f0.5/zero",
+   "unit": "coqui/puya",
+   "firmware": "coqui",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "erase4k",
+   "cycle": 1,
+   "point": "f0.5",
+   "policy": "zero",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "zero"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 38225340,
+    "actualCutCycle": 38225340,
+    "op": "erase4k",
+    "bytesAtRisk": 4096,
+    "ranges": 1,
+    "firstRange": [
+     618496,
+     622591
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 7,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 4096,
+    "unknownBytesAtEnd": 4096,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 906,
+    "outcomeHash": "ad7facb2586fc6e9",
+    "lcdHash": "292b631f72376bdf",
+    "flashHash": "dd0a13b244687709",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "3b14ac363aa39091705e423d11b30488a46e57ca2962fe21717ef63311585fe8"
+  },
+  {
+   "id": "cord/puya/hx/erase64k/accept/ff",
+   "unit": "cord/puya",
+   "firmware": "cord",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase64k",
+   "cycle": null,
+   "point": "accept",
+   "policy": "ff",
+   "address": 643072,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase64k",
+     "nth": 1,
+     "at": {
+      "atAccept": true
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "ff"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase64k",
+     "address": 643072,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 186298025,
+    "actualCutCycle": 186298025,
+    "op": "erase64k",
+    "bytesAtRisk": 65536,
+    "ranges": 1,
+    "firstRange": [
+     589824,
+     655359
+    ]
+   },
+   "reboot": {
+    "verdict": "blank",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 1,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 65536,
+    "unknownBytesAtEnd": 65536,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "71189f7fb6aed638",
+    "lcdHash": "d8b443032200e143",
+    "flashHash": "48bb4d4116e7306e",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "697830df146b0ee69ad0626c49e10858126fffa202e500afe1ddebbf0321a307"
+  },
+  {
+   "id": "cord/puya/hx/erase64k/accept/new",
+   "unit": "cord/puya",
+   "firmware": "cord",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase64k",
+   "cycle": null,
+   "point": "accept",
+   "policy": "new",
+   "address": 643072,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase64k",
+     "nth": 1,
+     "at": {
+      "atAccept": true
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "new"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase64k",
+     "address": 643072,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 186298025,
+    "actualCutCycle": 186298025,
+    "op": "erase64k",
+    "bytesAtRisk": 65536,
+    "ranges": 1,
+    "firstRange": [
+     589824,
+     655359
+    ]
+   },
+   "reboot": {
+    "verdict": "blank",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 1,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 65536,
+    "unknownBytesAtEnd": 65536,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "71189f7fb6aed638",
+    "lcdHash": "d8b443032200e143",
+    "flashHash": "48bb4d4116e7306e",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "156ef15b2858abdaa0fb8049ab9abfa4c7709231b4678d59b0c10a5653234dfc"
+  },
+  {
+   "id": "cord/puya/hx/erase64k/accept/old",
+   "unit": "cord/puya",
+   "firmware": "cord",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase64k",
+   "cycle": null,
+   "point": "accept",
+   "policy": "old",
+   "address": 643072,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase64k",
+     "nth": 1,
+     "at": {
+      "atAccept": true
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "old"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase64k",
+     "address": 643072,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 186298025,
+    "actualCutCycle": 186298025,
+    "op": "erase64k",
+    "bytesAtRisk": 65536,
+    "ranges": 1,
+    "firstRange": [
+     589824,
+     655359
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 12,
+    "unknownReads": 164,
+    "unknownBytesCarriedIn": 65536,
+    "unknownBytesAtEnd": 65536,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "b6a5f08b6f5f118e",
+    "lcdHash": "763eca202362c0b3",
+    "flashHash": "377c81b3f7d3e4a5",
+    "screenSameAsOldBound": null,
+    "flashSameAsOldBound": null
+   },
+   "reportSha256": "197ea89291f8c61bcfe8abf3d0a5ee63e7abf96964f12ff65adfbd6ab7211580"
+  },
+  {
+   "id": "felucca/puya/hx/erase32k/f0.5/bit-mix#1",
+   "unit": "felucca/puya",
+   "firmware": "felucca",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase32k",
+   "cycle": null,
+   "point": "f0.5",
+   "policy": "bit-mix#1",
+   "address": 475136,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase32k",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "bit-mix",
+     "seed": 1
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase32k",
+     "address": 475136,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176065812,
+    "actualCutCycle": 176065812,
+    "op": "erase32k",
+    "bytesAtRisk": 32768,
+    "ranges": 1,
+    "firstRange": [
+     458752,
+     491519
+    ]
+   },
+   "reboot": {
+    "verdict": "display-lost",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 1,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 32768,
+    "unknownBytesAtEnd": 32768,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "eb16059de8b2f6dc",
+    "lcdHash": "a44b8174b8a78479",
+    "flashHash": "81c996d8f0024f2c",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "fd9e6824d106436c043c3d664adcec14d5d069e96d6c438a983210f1b341dcbd"
+  },
+  {
+   "id": "felucca/puya/hx/erase32k/f0.5/ff",
+   "unit": "felucca/puya",
+   "firmware": "felucca",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase32k",
+   "cycle": null,
+   "point": "f0.5",
+   "policy": "ff",
+   "address": 475136,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase32k",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "ff"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase32k",
+     "address": 475136,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176065812,
+    "actualCutCycle": 176065812,
+    "op": "erase32k",
+    "bytesAtRisk": 32768,
+    "ranges": 1,
+    "firstRange": [
+     458752,
+     491519
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 2,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 32768,
+    "unknownBytesAtEnd": 32768,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "2d864c0b789a4321",
+    "lcdHash": "b3b65b48400683ee",
+    "flashHash": "b9438a4f93a474aa",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "5c53ab506b0d821b73e1de7c41015e1ce84c8d3ea5b36736645b8f213d18e55e"
+  },
+  {
+   "id": "felucca/puya/hx/erase32k/f0.5/new",
+   "unit": "felucca/puya",
+   "firmware": "felucca",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase32k",
+   "cycle": null,
+   "point": "f0.5",
+   "policy": "new",
+   "address": 475136,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase32k",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "new"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase32k",
+     "address": 475136,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176065812,
+    "actualCutCycle": 176065812,
+    "op": "erase32k",
+    "bytesAtRisk": 32768,
+    "ranges": 1,
+    "firstRange": [
+     458752,
+     491519
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 2,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 32768,
+    "unknownBytesAtEnd": 32768,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "2d864c0b789a4321",
+    "lcdHash": "b3b65b48400683ee",
+    "flashHash": "b9438a4f93a474aa",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "a3c9c162b137729c451427b27f28df1c35b6ad8c75562689066c855416b3c9c3"
+  },
+  {
+   "id": "felucca/puya/hx/erase32k/f0.5/old",
+   "unit": "felucca/puya",
+   "firmware": "felucca",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase32k",
+   "cycle": null,
+   "point": "f0.5",
+   "policy": "old",
+   "address": 475136,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase32k",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "old"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase32k",
+     "address": 475136,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176065812,
+    "actualCutCycle": 176065812,
+    "op": "erase32k",
+    "bytesAtRisk": 32768,
+    "ranges": 1,
+    "firstRange": [
+     458752,
+     491519
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 27,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 32768,
+    "unknownBytesAtEnd": 32768,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "177f9b3561777e12",
+    "lcdHash": "2cd19aafdc5ad64f",
+    "flashHash": "83e1f3db14d04f6c",
+    "screenSameAsOldBound": null,
+    "flashSameAsOldBound": null
+   },
+   "reportSha256": "325340eb93e3af096d3b88d900ec5390308927aaf55c47f5df864daa85788e98"
+  },
+  {
+   "id": "felucca/puya/hx/erase32k/f0.5/zero",
+   "unit": "felucca/puya",
+   "firmware": "felucca",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "erase32k",
+   "cycle": null,
+   "point": "f0.5",
+   "policy": "zero",
+   "address": 475136,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "erase32k",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "zero"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "erase32k",
+     "address": 475136,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176065812,
+    "actualCutCycle": 176065812,
+    "op": "erase32k",
+    "bytesAtRisk": 32768,
+    "ranges": 1,
+    "firstRange": [
+     458752,
+     491519
+    ]
+   },
+   "reboot": {
+    "verdict": "blank",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 1,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 32768,
+    "unknownBytesAtEnd": 32768,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "c35020473aed1b46",
+    "lcdHash": "d8b443032200e143",
+    "flashHash": "6074e8decc235ff6",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "0a855cb72415c36f6a3a6e28c61a76aec6352538af7a0a3a25dd4d49ad303bb2"
+  },
+  {
+   "id": "quadro-fm1/puya/fw/erase4k@1/f0.5/ff",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "erase4k",
+   "cycle": 1,
+   "point": "f0.5",
+   "policy": "ff",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "ff"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 107625329,
+    "actualCutCycle": 107625329,
+    "op": "erase4k",
+    "bytesAtRisk": 4096,
+    "ranges": 1,
+    "firstRange": [
+     876544,
+     880639
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 180,
+    "unknownReads": 2,
+    "unknownBytesCarriedIn": 4096,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 3,
+    "outcomeHash": "f47a8ec3e9aff231",
+    "lcdHash": "6d2ac5b6ae79b291",
+    "flashHash": "6c0a7f6a526d07d2",
+    "screenSameAsOldBound": true,
+    "flashSameAsOldBound": true
+   },
+   "reportSha256": "d094f5ceb8a73960c9da99bea7a0ad7e8f1df80449a0cfc21621ad60e2219cfd"
+  },
+  {
+   "id": "quadro-fm1/puya/fw/erase4k@1/f0.5/new",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "erase4k",
+   "cycle": 1,
+   "point": "f0.5",
+   "policy": "new",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "new"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 107625329,
+    "actualCutCycle": 107625329,
+    "op": "erase4k",
+    "bytesAtRisk": 4096,
+    "ranges": 1,
+    "firstRange": [
+     876544,
+     880639
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 180,
+    "unknownReads": 2,
+    "unknownBytesCarriedIn": 4096,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 3,
+    "outcomeHash": "f47a8ec3e9aff231",
+    "lcdHash": "6d2ac5b6ae79b291",
+    "flashHash": "6c0a7f6a526d07d2",
+    "screenSameAsOldBound": true,
+    "flashSameAsOldBound": true
+   },
+   "reportSha256": "f2e9ce98197cc658dad464dd68c58aedd1ea458db02d8263050785329c5b8cee"
+  },
+  {
+   "id": "quadro-fm1/puya/fw/erase4k@1/f0.5/old",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "erase4k",
+   "cycle": 1,
+   "point": "f0.5",
+   "policy": "old",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 1,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "old"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 107625329,
+    "actualCutCycle": 107625329,
+    "op": "erase4k",
+    "bytesAtRisk": 4096,
+    "ranges": 1,
+    "firstRange": [
+     876544,
+     880639
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 180,
+    "unknownReads": 2,
+    "unknownBytesCarriedIn": 4096,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 3,
+    "outcomeHash": "f47a8ec3e9aff231",
+    "lcdHash": "6d2ac5b6ae79b291",
+    "flashHash": "6c0a7f6a526d07d2",
+    "screenSameAsOldBound": null,
+    "flashSameAsOldBound": null
+   },
+   "reportSha256": "fa5ec28c3c518e8b95376805ad698cfcc2531457b76f8f629afee78ca1fa1ea4"
+  },
+  {
+   "id": "quadro-fm1/puya/fw/program@2/f0.5/ff",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "program",
+   "cycle": 2,
+   "point": "f0.5",
+   "policy": "ff",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 2,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "ff"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 108130940,
+    "actualCutCycle": 108130940,
+    "op": "program",
+    "bytesAtRisk": 208,
+    "ranges": 1,
+    "firstRange": [
+     876800,
+     877007
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 180,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 208,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 3,
+    "outcomeHash": "86ff85227f7cc42c",
+    "lcdHash": "6d2ac5b6ae79b291",
+    "flashHash": "6c0a7f6a526d07d2",
+    "screenSameAsOldBound": true,
+    "flashSameAsOldBound": true
+   },
+   "reportSha256": "6b5ceda01a4d8c580f95f38664acb93ffaf310396ef0a3eeee29116ee4451f96"
+  },
+  {
+   "id": "quadro-fm1/puya/fw/program@2/f0.5/new",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "program",
+   "cycle": 2,
+   "point": "f0.5",
+   "policy": "new",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 2,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "new"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 108130940,
+    "actualCutCycle": 108130940,
+    "op": "program",
+    "bytesAtRisk": 208,
+    "ranges": 1,
+    "firstRange": [
+     876800,
+     877007
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 180,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 208,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 3,
+    "outcomeHash": "a05e4dca60211827",
+    "lcdHash": "6d2ac5b6ae79b291",
+    "flashHash": "6c0a7f6a526d07d2",
+    "screenSameAsOldBound": true,
+    "flashSameAsOldBound": true
+   },
+   "reportSha256": "56feb3708e619743541388144defd03ef3587006acebc25e2289c29f80ee9383"
+  },
+  {
+   "id": "quadro-fm1/puya/fw/program@2/f0.5/old",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "firmware",
+   "kind": "program",
+   "cycle": 2,
+   "point": "f0.5",
+   "policy": "old",
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "any",
+     "nth": 2,
+     "at": {
+      "fraction": 0.5
+     }
+    },
+    "maxMs": 8000,
+    "policy": {
+     "kind": "old"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": null
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 108130940,
+    "actualCutCycle": 108130940,
+    "op": "program",
+    "bytesAtRisk": 208,
+    "ranges": 1,
+    "firstRange": [
+     876800,
+     877007
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": true,
+    "lcdColours": 180,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 208,
+    "unknownBytesAtEnd": 0,
+    "rangeErasedAgain": true,
+    "firmwareFlashChanges": 3,
+    "outcomeHash": "86ff85227f7cc42c",
+    "lcdHash": "6d2ac5b6ae79b291",
+    "flashHash": "6c0a7f6a526d07d2",
+    "screenSameAsOldBound": null,
+    "flashSameAsOldBound": null
+   },
+   "reportSha256": "09960d69c1160e652010615ab3cd73bb6f4f57a74c17bc7c972274869a839a1e"
+  },
+  {
+   "id": "quadro-fm1/puya/hx/chip-erase/accept/ff",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "chip-erase",
+   "cycle": null,
+   "point": "accept",
+   "policy": "ff",
+   "address": null,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "chip-erase",
+     "nth": 1,
+     "at": {
+      "atAccept": true
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "ff"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "chip-erase",
+     "address": 876544,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176489672,
+    "actualCutCycle": 176489672,
+    "op": "chip-erase",
+    "bytesAtRisk": 1048576,
+    "ranges": 1,
+    "firstRange": [
+     0,
+     1048575
+    ]
+   },
+   "reboot": {
+    "verdict": "crashed",
+    "haltedAtMs": 0,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 1,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 1048576,
+    "unknownBytesAtEnd": 1048576,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "f5fb04aa5b882706",
+    "lcdHash": "d8b443032200e143",
+    "flashHash": "f5fb04aa5b882706",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "497de0e19582d8e02335de5b2625a9beb6dae5b1d0916f52b7479a76b1c4c384"
+  },
+  {
+   "id": "quadro-fm1/puya/hx/chip-erase/accept/new",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "chip-erase",
+   "cycle": null,
+   "point": "accept",
+   "policy": "new",
+   "address": null,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "chip-erase",
+     "nth": 1,
+     "at": {
+      "atAccept": true
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "new"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "chip-erase",
+     "address": 876544,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176489672,
+    "actualCutCycle": 176489672,
+    "op": "chip-erase",
+    "bytesAtRisk": 1048576,
+    "ranges": 1,
+    "firstRange": [
+     0,
+     1048575
+    ]
+   },
+   "reboot": {
+    "verdict": "crashed",
+    "haltedAtMs": 0,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 1,
+    "unknownReads": 0,
+    "unknownBytesCarriedIn": 1048576,
+    "unknownBytesAtEnd": 1048576,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "f5fb04aa5b882706",
+    "lcdHash": "d8b443032200e143",
+    "flashHash": "f5fb04aa5b882706",
+    "screenSameAsOldBound": false,
+    "flashSameAsOldBound": false
+   },
+   "reportSha256": "b58a460c5cf55259f58811d84470b765acc417da373c50cddd4aa71d3ddc5caa"
+  },
+  {
+   "id": "quadro-fm1/puya/hx/chip-erase/accept/old",
+   "unit": "quadro-fm1/puya",
+   "firmware": "quadro-fm1",
+   "chip": "puya",
+   "origin": "harness",
+   "kind": "chip-erase",
+   "cycle": null,
+   "point": "accept",
+   "policy": "old",
+   "address": null,
+   "cfg": {
+    "chip": "puya",
+    "timing": "typical",
+    "fault": {
+     "op": "chip-erase",
+     "nth": 1,
+     "at": {
+      "atAccept": true
+     }
+    },
+    "maxMs": 3000,
+    "policy": {
+     "kind": "old"
+    },
+    "rebootMs": 3000,
+    "mhz": 100,
+    "jit": false,
+    "flashUid": null,
+    "inputs": true,
+    "inject": {
+     "kind": "chip-erase",
+     "address": 876544,
+     "warmupMs": 1500
+    }
+   },
+   "stop": {
+    "outcome": "power-cut",
+    "status": "power_cut",
+    "requestedCutCycle": 176489672,
+    "actualCutCycle": 176489672,
+    "op": "chip-erase",
+    "bytesAtRisk": 1048576,
+    "ranges": 1,
+    "firstRange": [
+     0,
+     1048575
+    ]
+   },
+   "reboot": {
+    "verdict": "booted",
+    "haltedAtMs": null,
+    "trap": null,
+    "screenMatchesFreshBoot": false,
+    "lcdColours": 180,
+    "unknownReads": 11,
+    "unknownBytesCarriedIn": 1048576,
+    "unknownBytesAtEnd": 1048576,
+    "rangeErasedAgain": false,
+    "firmwareFlashChanges": 0,
+    "outcomeHash": "6c0a7f6a526d07d2",
+    "lcdHash": "a12e8216132a9b66",
+    "flashHash": "6c0a7f6a526d07d2",
+    "screenSameAsOldBound": null,
+    "flashSameAsOldBound": null
+   },
+   "reportSha256": "4c35ea166847772731e3c0f964cc5c048cccd7b2a62d89d6f86d92d9d5c3c2e3"
+  }
+ ]
+}
