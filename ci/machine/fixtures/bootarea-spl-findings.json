@@ -1,0 +1,322 @@
+{
+ "version": 1,
+ "evidenceLevel": "DECODED",
+ "note": "Structural findings from a READ-ONLY static decode of each distinct uboot.boot body with the emulator's own instruction decoder tables (scratch tool outside the repository). Nothing was executed, modified or stored: no bytes, no listings. Statements marked INFERRED are interpretations of decoded structure, never established behaviour.",
+ "decoder": "fm1-isa decode_bytes, linear sweep, resynchronising 2 bytes after an undecodable position",
+ "bodies": [
+  {
+   "sha8": "4e3b4c22",
+   "size": 14536,
+   "packages": 267,
+   "bytes": 14536,
+   "instructions": 4927,
+   "coveredPct": 99.7,
+   "undecodedPositions": 25,
+   "relativeBranches": 821,
+   "relativeTargetsInsideBlock": 818,
+   "relativeTargetsOnDecodedInstructionStart": 694,
+   "ontoStartPctOfInside": 84.8,
+   "undecodedPer1000Bytes": 1.72,
+   "class": "code-like"
+  },
+  {
+   "sha8": "b5a07159",
+   "size": 14384,
+   "packages": 5,
+   "bytes": 14384,
+   "instructions": 5403,
+   "coveredPct": 81,
+   "undecodedPositions": 1364,
+   "relativeBranches": 1308,
+   "relativeTargetsInsideBlock": 1261,
+   "relativeTargetsOnDecodedInstructionStart": 770,
+   "ontoStartPctOfInside": 61.1,
+   "undecodedPer1000Bytes": 94.83,
+   "class": "noise-like (not plaintext pi32v2 under the tried transforms)"
+  },
+  {
+   "sha8": "b07f1134",
+   "size": 14488,
+   "packages": 2,
+   "bytes": 14488,
+   "instructions": 5434,
+   "coveredPct": 80.9,
+   "undecodedPositions": 1384,
+   "relativeBranches": 1302,
+   "relativeTargetsInsideBlock": 1249,
+   "relativeTargetsOnDecodedInstructionStart": 795,
+   "ontoStartPctOfInside": 63.7,
+   "undecodedPer1000Bytes": 95.53,
+   "class": "noise-like (not plaintext pi32v2 under the tried transforms)"
+  },
+  {
+   "sha8": "52a03faa",
+   "size": 14560,
+   "packages": 1,
+   "bytes": 14560,
+   "instructions": 5469,
+   "coveredPct": 80.9,
+   "undecodedPositions": 1392,
+   "relativeBranches": 1351,
+   "relativeTargetsInsideBlock": 1298,
+   "relativeTargetsOnDecodedInstructionStart": 798,
+   "ontoStartPctOfInside": 61.5,
+   "undecodedPer1000Bytes": 95.6,
+   "class": "noise-like (not plaintext pi32v2 under the tried transforms)"
+  },
+  {
+   "sha8": "64ccc63e",
+   "size": 14444,
+   "packages": 1,
+   "bytes": 14444,
+   "instructions": 4884,
+   "coveredPct": 99.7,
+   "undecodedPositions": 25,
+   "relativeBranches": 818,
+   "relativeTargetsInsideBlock": 815,
+   "relativeTargetsOnDecodedInstructionStart": 698,
+   "ontoStartPctOfInside": 85.6,
+   "undecodedPer1000Bytes": 1.73,
+   "class": "code-like"
+  },
+  {
+   "sha8": "349a72e1",
+   "size": 4096,
+   "packages": 1,
+   "bytes": 4096,
+   "instructions": 1555,
+   "coveredPct": 82,
+   "undecodedPositions": 369,
+   "relativeBranches": 357,
+   "relativeTargetsInsideBlock": 327,
+   "relativeTargetsOnDecodedInstructionStart": 214,
+   "ontoStartPctOfInside": 65.4,
+   "undecodedPer1000Bytes": 90.09,
+   "class": "noise-like (not plaintext pi32v2 under the tried transforms)"
+  }
+ ],
+ "controls": [
+  {
+   "control": "ctl-code-a",
+   "what": "Felucca app code, decrypted XIP window, 14,536 bytes from 0x1000 (executed by the emulator)",
+   "bytes": 14536,
+   "instructions": 4807,
+   "coveredPct": 100,
+   "undecodedPositions": 2,
+   "relativeBranches": 405,
+   "relativeTargetsInsideBlock": 388,
+   "relativeTargetsOnDecodedInstructionStart": 305,
+   "ontoStartPctOfInside": 78.6,
+   "undecodedPer1000Bytes": 0.14
+  },
+  {
+   "control": "ctl-code-b",
+   "what": "Felucca app code, from 0x20000",
+   "bytes": 14536,
+   "instructions": 4417,
+   "coveredPct": 99.8,
+   "undecodedPositions": 15,
+   "relativeBranches": 651,
+   "relativeTargetsInsideBlock": 218,
+   "relativeTargetsOnDecodedInstructionStart": 164,
+   "ontoStartPctOfInside": 75.2,
+   "undecodedPer1000Bytes": 1.03
+  },
+  {
+   "control": "ctl-code-c",
+   "what": "Felucca app window from 0x60000 (decodes like noise: data, not code)",
+   "bytes": 14536,
+   "instructions": 5856,
+   "coveredPct": 82,
+   "undecodedPositions": 1309,
+   "relativeBranches": 498,
+   "relativeTargetsInsideBlock": 482,
+   "relativeTargetsOnDecodedInstructionStart": 316,
+   "ontoStartPctOfInside": 65.6,
+   "undecodedPer1000Bytes": 90.05
+  },
+  {
+   "control": "ctl-scrambled",
+   "what": "Felucca flash as stored from 0x4000 (scrambled with the chip key)",
+   "bytes": 14536,
+   "instructions": 5513,
+   "coveredPct": 81.8,
+   "undecodedPositions": 1322,
+   "relativeBranches": 1358,
+   "relativeTargetsInsideBlock": 1303,
+   "relativeTargetsOnDecodedInstructionStart": 860,
+   "ontoStartPctOfInside": 66,
+   "undecodedPer1000Bytes": 90.95
+  },
+  {
+   "control": "ctl-random",
+   "what": "seeded pseudo-random bytes",
+   "bytes": 14536,
+   "instructions": 5512,
+   "coveredPct": 81.9,
+   "undecodedPositions": 1314,
+   "relativeBranches": 1300,
+   "relativeTargetsInsideBlock": 1252,
+   "relativeTargetsOnDecodedInstructionStart": 795,
+   "ontoStartPctOfInside": 63.5,
+   "undecodedPer1000Bytes": 90.4
+  }
+ ],
+ "descrambleAttempts": "unscramble with the chip key 0x980F at base 0 and at the flash offset, and 32-byte unmask with keys 0xFFFF and 0x980F: none made spl1, spl2, spl3 or spl5 decode like code",
+ "undecodedSplPackages": {
+  "count": 9,
+  "splStatus": "boot-code-unknown",
+  "note": "The SPL body of these packages did not decode like code under the tried transforms. Their contents are not inferred and no behaviour is attributed to them.",
+  "packages": [
+   {
+    "id": "audiorouter",
+    "bodySha8": "52a03faa"
+   },
+   {
+    "id": "b1",
+    "bodySha8": "b5a07159"
+   },
+   {
+    "id": "beetle",
+    "bodySha8": "b5a07159"
+   },
+   {
+    "id": "beetleblue",
+    "bodySha8": "b5a07159"
+   },
+   {
+    "id": "clatter",
+    "bodySha8": "b07f1134"
+   },
+   {
+    "id": "dx747",
+    "bodySha8": "b07f1134"
+   },
+   {
+    "id": "etch",
+    "bodySha8": "b5a07159"
+   },
+   {
+    "id": "picovave",
+    "bodySha8": "349a72e1"
+   },
+   {
+    "id": "rupture",
+    "bodySha8": "b5a07159"
+   }
+  ]
+ },
+ "plaintextBodyDetails": {
+  "spl0": {
+   "peripheralWindowImmediates": {
+    "Crc": {
+     "immediates": 1,
+     "values": [
+      "0x13500"
+     ]
+    },
+    "Clk": {
+     "immediates": 4,
+     "values": [
+      "0x10000",
+      "0x10008"
+     ]
+    },
+    "Timer": {
+     "immediates": 1,
+     "values": [
+      "0x10400"
+     ]
+    },
+    "Gpio": {
+     "immediates": 3,
+     "values": [
+      "0x500c0",
+      "0x50148",
+      "0x50180"
+     ]
+    },
+    "Spi0": {
+     "immediates": 7,
+     "values": [
+      "0x11c00"
+     ]
+    },
+    "Sfcenc": {
+     "immediates": 2,
+     "values": [
+      "0x40304"
+     ]
+    }
+   },
+   "immediate0x4000": 9,
+   "immediateXipBase0x02000000": 4,
+   "immediateFlashSize0x100000": 1,
+   "immediate0x1021": 0,
+   "crcHelperAt0x58": {
+    "callSites": 14,
+    "followedWithin8InstructionsByAConditional": 13,
+    "helperShape": "initialises a CRC-unit register, feeds bytes in a counted loop, reads a result register and returns its low halfword (DECODED, by reading the decoded sequence of spl0; spl4 has a helper at the same offset with the same number of call sites minus one); that it computes a CRC-16 over a buffer is INFERRED"
+   }
+  },
+  "spl4": {
+   "peripheralWindowImmediates": {
+    "Crc": {
+     "immediates": 1,
+     "values": [
+      "0x13500"
+     ]
+    },
+    "Clk": {
+     "immediates": 4,
+     "values": [
+      "0x10000",
+      "0x10008"
+     ]
+    },
+    "Timer": {
+     "immediates": 1,
+     "values": [
+      "0x10400"
+     ]
+    },
+    "Gpio": {
+     "immediates": 5,
+     "values": [
+      "0x500c0",
+      "0x50108",
+      "0x50148",
+      "0x50180"
+     ]
+    },
+    "Spi0": {
+     "immediates": 7,
+     "values": [
+      "0x11c00"
+     ]
+    },
+    "Sfcenc": {
+     "immediates": 2,
+     "values": [
+      "0x40304"
+     ]
+    }
+   },
+   "immediate0x4000": 9,
+   "immediateXipBase0x02000000": 4,
+   "immediateFlashSize0x100000": 1,
+   "immediate0x1021": 0,
+   "crcHelperAt0x58": {
+    "callSites": 13,
+    "followedWithin8InstructionsByAConditional": 12,
+    "helperShape": "initialises a CRC-unit register, feeds bytes in a counted loop, reads a result register and returns its low halfword (DECODED, by reading the decoded sequence of spl0; spl4 has a helper at the same offset with the same number of call sites minus one); that it computes a CRC-16 over a buffer is INFERRED"
+   }
+  }
+ },
+ "stringTable": {
+  "location": "inside spl0/spl4 near the end of the body",
+  "entries": "about 60 configuration-key names (clock, SDRAM, boot-delay and update options), including the exact names app_dir_head, app_dir_head2, usb_update_mode, UARTUPDATE and UART_UPDATE_CUSTOM",
+  "evidence": "DECODED (ASCII string literals present)",
+  "inferred": "the SPL parses named configuration items and may look up directory entries by name (INFERRED; the packages carry no app_dir_head2 entry)"
+ }
+}

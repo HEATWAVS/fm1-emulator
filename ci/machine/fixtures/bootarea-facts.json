@@ -1,0 +1,373 @@
+{
+ "version": 1,
+ "evidenceLevel": "PACKAGE",
+ "note": "Structural facts about the catalogue's boot heads. CRC validity shows self-consistency of the packages, NOT that the mask ROM, the SPL or the emulator checks it. No firmware bytes are stored.",
+ "packages": 277,
+ "crcFieldsValid": {
+  "headerOk": 277,
+  "headsAllOk": 277,
+  "configBlobOk": 277
+ },
+ "imagesReachingKeySector": 0,
+ "layout": {
+  "headerBytes": "[0,0x20)",
+  "directoryHeadsFrom": 32,
+  "headBytes": 32,
+  "appAreaOffset": 16384,
+  "keySectorOffset": 1044480
+ },
+ "rawHeaderVariants": [
+  {
+   "variant": 0,
+   "packages": 277
+  }
+ ],
+ "directoryLayouts": [
+  {
+   "heads": [
+    {
+     "name": "uboot.boot",
+     "offset": 160,
+     "size": 14536,
+     "flags": 0,
+     "last": false
+    },
+    {
+     "name": "isd_config.ini",
+     "offset": 14696,
+     "size": 45,
+     "flags": 2,
+     "last": false
+    },
+    {
+     "name": "app_dir_head",
+     "offset": 16384,
+     "size": 4294967295,
+     "flags": 129,
+     "last": false
+    },
+    {
+     "name": "key_mac",
+     "offset": 1044480,
+     "size": 4096,
+     "flags": 18,
+     "last": true
+    }
+   ],
+   "packages": 267
+  },
+  {
+   "heads": [
+    {
+     "name": "uboot.boot",
+     "offset": 160,
+     "size": 14384,
+     "flags": 0,
+     "last": false
+    },
+    {
+     "name": "isd_config.ini",
+     "offset": 14544,
+     "size": 699,
+     "flags": 2,
+     "last": false
+    },
+    {
+     "name": "app_dir_head",
+     "offset": 16384,
+     "size": 4294967295,
+     "flags": 129,
+     "last": false
+    },
+    {
+     "name": "key_mac",
+     "offset": 1044480,
+     "size": 4096,
+     "flags": 18,
+     "last": true
+    }
+   ],
+   "packages": 5
+  },
+  {
+   "heads": [
+    {
+     "name": "uboot.boot",
+     "offset": 160,
+     "size": 14488,
+     "flags": 0,
+     "last": false
+    },
+    {
+     "name": "isd_config.ini",
+     "offset": 14648,
+     "size": 755,
+     "flags": 2,
+     "last": false
+    },
+    {
+     "name": "app_dir_head",
+     "offset": 16384,
+     "size": 4294967295,
+     "flags": 129,
+     "last": false
+    },
+    {
+     "name": "key_mac",
+     "offset": 1044480,
+     "size": 4096,
+     "flags": 18,
+     "last": true
+    }
+   ],
+   "packages": 2
+  },
+  {
+   "heads": [
+    {
+     "name": "uboot.boot",
+     "offset": 160,
+     "size": 14560,
+     "flags": 0,
+     "last": false
+    },
+    {
+     "name": "isd_config.ini",
+     "offset": 16288,
+     "size": 96,
+     "flags": 2,
+     "last": false
+    },
+    {
+     "name": "app_dir_head",
+     "offset": 16384,
+     "size": 4294967295,
+     "flags": 129,
+     "last": false
+    },
+    {
+     "name": "key_mac",
+     "offset": 1044480,
+     "size": 4096,
+     "flags": 18,
+     "last": true
+    }
+   ],
+   "packages": 1
+  },
+  {
+   "heads": [
+    {
+     "name": "uboot.boot",
+     "offset": 160,
+     "size": 14444,
+     "flags": 0,
+     "last": false
+    },
+    {
+     "name": "isd_config.ini",
+     "offset": 14604,
+     "size": 45,
+     "flags": 2,
+     "last": false
+    },
+    {
+     "name": "app_dir_head",
+     "offset": 16384,
+     "size": 4294967295,
+     "flags": 129,
+     "last": false
+    },
+    {
+     "name": "key_mac",
+     "offset": 1044480,
+     "size": 4096,
+     "flags": 18,
+     "last": true
+    }
+   ],
+   "packages": 1
+  },
+  {
+   "heads": [
+    {
+     "name": "uboot.boot",
+     "offset": 160,
+     "size": 4096,
+     "flags": 0,
+     "last": false
+    },
+    {
+     "name": "isd_config.ini",
+     "offset": 4256,
+     "size": 45,
+     "flags": 2,
+     "last": false
+    },
+    {
+     "name": "app_dir_head",
+     "offset": 16384,
+     "size": 4294967295,
+     "flags": 129,
+     "last": false
+    },
+    {
+     "name": "key_mac",
+     "offset": 1044480,
+     "size": 4096,
+     "flags": 18,
+     "last": true
+    }
+   ],
+   "packages": 1
+  }
+ ],
+ "ubootBodies": [
+  {
+   "sha8": "4e3b4c22",
+   "size": 14536,
+   "offset": 160,
+   "packages": 267
+  },
+  {
+   "sha8": "b5a07159",
+   "size": 14384,
+   "offset": 160,
+   "packages": 5
+  },
+  {
+   "sha8": "b07f1134",
+   "size": 14488,
+   "offset": 160,
+   "packages": 2
+  },
+  {
+   "sha8": "64ccc63e",
+   "size": 14444,
+   "offset": 160,
+   "packages": 1
+  },
+  {
+   "sha8": "52a03faa",
+   "size": 14560,
+   "offset": 160,
+   "packages": 1
+  },
+  {
+   "sha8": "349a72e1",
+   "size": 4096,
+   "offset": 160,
+   "packages": 1
+  }
+ ],
+ "isdConfigEntries": [
+  {
+   "entrySha8": "1fb13668",
+   "entrySize": 45,
+   "blobSha8": "f74d1a83",
+   "derivedKey": 38927,
+   "blobCrcOk": true,
+   "packages": 268
+  },
+  {
+   "entrySha8": "0952afd9",
+   "entrySize": 699,
+   "blobSha8": "35d5404d",
+   "derivedKey": 38927,
+   "blobCrcOk": true,
+   "packages": 5
+  },
+  {
+   "entrySha8": "04f7f243",
+   "entrySize": 755,
+   "blobSha8": "f74d1a83",
+   "derivedKey": 38927,
+   "blobCrcOk": true,
+   "packages": 2
+  },
+  {
+   "entrySha8": "2d777e78",
+   "entrySize": 96,
+   "blobSha8": "f74d1a83",
+   "derivedKey": 38927,
+   "blobCrcOk": true,
+   "packages": 1
+  },
+  {
+   "entrySha8": "282d7658",
+   "entrySize": 45,
+   "blobSha8": "f74d1a83",
+   "derivedKey": 38927,
+   "blobCrcOk": true,
+   "packages": 1
+  }
+ ],
+ "gapAfterConfigEntry": [
+  {
+   "start": 14741,
+   "end": 16384,
+   "allFF": true,
+   "packages": 267
+  },
+  {
+   "start": 15243,
+   "end": 16384,
+   "allFF": true,
+   "packages": 5
+  },
+  {
+   "start": 15403,
+   "end": 16384,
+   "allFF": true,
+   "packages": 2
+  },
+  {
+   "start": 14649,
+   "end": 16384,
+   "allFF": true,
+   "packages": 1
+  },
+  {
+   "start": 16384,
+   "end": 16384,
+   "allFF": true,
+   "packages": 1
+  },
+  {
+   "start": 4301,
+   "end": 16384,
+   "allFF": true,
+   "packages": 1
+  }
+ ],
+ "flashImageLengths": [
+  {
+   "flashImageBytes": 602112,
+   "packages": 271
+  },
+  {
+   "flashImageBytes": 1032192,
+   "packages": 1
+  },
+  {
+   "flashImageBytes": 466944,
+   "packages": 1
+  },
+  {
+   "flashImageBytes": 471040,
+   "packages": 1
+  },
+  {
+   "flashImageBytes": 651264,
+   "packages": 1
+  },
+  {
+   "flashImageBytes": 679936,
+   "packages": 1
+  },
+  {
+   "flashImageBytes": 819200,
+   "packages": 1
+  }
+ ]
+}
