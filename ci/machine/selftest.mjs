@@ -35,6 +35,7 @@ import { registerFaultLiveTests } from "./faultlivetests.mjs";
 import { registerFaultHarnessQuickTests, registerFaultHarnessLiveTests } from "./faultharnesstests.mjs";
 import { registerFaultSurveyQuickTests, registerFaultSurveyLiveTests } from "./faultsurveytests.mjs";
 import { registerRecoveryQuickTests, registerRecoveryFullTests, registerRecoveryLiveTests } from "./recoverytests.mjs";
+import { registerBootAreaQuickTests, registerBootAreaFullTests, registerBootAreaLiveTests } from "./bootareatests.mjs";
 import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions, parseFlashUid, uidWords } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
@@ -131,6 +132,8 @@ test.quick("power cycle carries flash over; corruption while 'off' is applied", 
   assert.deepEqual(worse.changedSectors().map((s) => s.at), [0x20000, 0x30000]);
 });
 
+// What this records is about THIS ENGINE ONLY: its boot unpacks the package, never the live flash, so a zeroed sector 0 changes nothing. It is NOT evidence that the damage is harmless on
+// hardware. The boot-area diagnostic (bootarea.mjs, docs/dev/BOOT-AREA.md) labels the same flash emulator-unbootable by the package-unpacker rules: an emulator-defined divergence, not a hardware claim.
 test("KNOWN LIMITATION: the boot-area sector (0x0) is not used, so corrupting it changes nothing", () => {
   const base = watch(Fm1Machine.boot(engine, FELUCCA), { seconds: 2 });
   const sectors = corruptedSectors(engine, FELUCCA, ["zero:0x0"]);
@@ -624,6 +627,9 @@ registerFaultSurveyLiveTests(test.chip, { chipEngine, shipped: engine, pkg: FELU
 registerRecoveryQuickTests(test.quick, { engine });   // recovery scenarios, corrupted flash on the shipped engine + the committed survey fixture (Component 6), quick tier
 registerRecoveryFullTests(test, { engine });   // the rest of the corrupted-flash catalogue on the shipped engine (Component 6), full tier, no chip engine needed
 registerRecoveryLiveTests(test.chip, { chipEngine });   // interrupted-cycle recovery scenarios on the chip-profile engine (Component 6), full tier, SKIPPED without it
+registerBootAreaQuickTests(test.quick, { engine });   // the boot-area diagnostic: classifier, fixtures, read-only adapter (Component 7, Stage 7B), quick tier
+registerBootAreaFullTests(test, { engine });   // all 277 intact packages, the regenerated fixture and the running divergence (Component 7), full tier, no chip engine needed
+registerBootAreaLiveTests(test.chip, { chipEngine });   // interrupted sector-0 and 0xFF000 erases on the chip-profile engine (Component 7), full tier, SKIPPED without it
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance, incl. fault injection), quick tier
 registerFaultRegressionTests(test, { genPath: resolve(import.meta.dirname, "../engine/gen-transcripts.mjs") });   // full tier: transcripts unchanged with faults disabled
 

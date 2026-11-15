@@ -65,6 +65,21 @@ export function chipKey(blob) {
   for (let i = 0; i < 16; i++) if ((blob[16 + i] ^ blob[15 - i]) < sum) key |= 1 << i;
   return key;
 }
+/**
+ * Known-answer vectors for chip_key at its boundaries: SYNTHETIC 32-byte blobs (pseudo-random, not taken from any firmware), each chosen so that a one-off error in the rule it pins
+ * (the 0xE0 and 0x10 clamps, the strict comparison, the clamped sum used in it) changes the key. Their keys are the ENGINE's: fwscportcheck.mjs crafts a package for each, scrambled
+ * with the key listed, and the shipped engine boots it to the expected window, so the engine derives exactly this key from this blob. EVIDENCE LEVEL: EMULATOR.
+ */
+export const CHIP_KEY_VECTORS = Object.freeze([
+  Object.freeze({ pins: "high clamp starts at a sum of 0xE0", blob: "16271c961c62cfad7733c4afb23669891bc6e827bc002ed462c0e6de98a27e3f", key: 55001 }),
+  Object.freeze({ pins: "a sum of 0xDF is not clamped", blob: "ab0120b3a7fab9b85869f5884aea3f9dc8d8c43cdf5070575b2eefaec70eac3d", key: 65277 }),
+  Object.freeze({ pins: "low clamp ends at a sum of 0x10", blob: "714bd4c0630253b36a0fd551110ec5d2a55a5141321063ca840ca76f27ea8b2c", key: 10504 }),
+  Object.freeze({ pins: "a sum of 0x11 is not clamped", blob: "660539bd4e7a9e9eab25650a09a2fcc6b34c8d36b640052dde5a1020b636190b", key: 12288 }),
+  Object.freeze({ pins: "a byte pair whose xor equals the sum is not below it", blob: "8b2f4daa6a6298781caba6b330a5e2dcf0ae791a69e65780671828c176f157da", key: 265 }),
+  Object.freeze({ pins: "a low-clamped sum compares as 0x55", blob: "39bfe9c6d81f5d0a5b652309502ca9ef01d219057b7160058ae62a4bbacce2b9", key: 9316 }),
+  Object.freeze({ pins: "a clamped sum compares as 0xAA", blob: "87db8db8f739bac05b4bcad441b02835f3c201d07e9f41b8ae20948b0fe4669e", key: 43880 }),
+]);
+
 /** fwsc.rs unscramble(). */
 export function unscramble(buf, from, len, base, key) {
   for (let i = 0; i < len; i += 32) {

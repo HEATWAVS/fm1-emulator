@@ -66,4 +66,4 @@ Not used on the shipped engine: all-zero flash and `zero:0x4000` on `frasil`/`mo
 
 ## Not covered
 
-A failed firmware update, USB, the update loader, the boot area and real bricking (Component 7, research only); the physical chip's behaviour after an interruption; recovery paths in the firmware that need a user action the 8 s input script does not perform; firmware other than the 8 used; chips other than Puya for the interrupted-cycle scenarios (the survey shows the two profiles alike, F4); anything on macOS or Linux.
+A failed firmware update, USB, the update loader and real bricking (the boot area now has an emulator-defined diagnostic, `BOOT-AREA.md`, but no recovery model and no claim about hardware); the physical chip's behaviour after an interruption; recovery paths in the firmware that need a user action the 8 s input script does not perform; firmware other than the 8 used; chips other than Puya for the interrupted-cycle scenarios (the survey shows the two profiles alike, F4); anything on macOS or Linux.

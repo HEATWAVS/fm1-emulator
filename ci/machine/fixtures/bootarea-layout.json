@@ -1,0 +1,357 @@
+{
+ "version": 1,
+ "evidenceLevel": "PACKAGE",
+ "note": "Boot-head layout of the catalogue's packages as the diagnostic derives it from each package's own directory, and the decode status of each uboot.boot body from the read-only static scan (DECODED, never executed). Structure only: no firmware bytes. The SPL status of every package is boot-code-unknown whatever its decode status.",
+ "packages": 277,
+ "regionOrder": [
+  "header",
+  "directory",
+  "spl",
+  "keyBlob",
+  "gap",
+  "appArea",
+  "keySector",
+  "other"
+ ],
+ "bootAreaRegions": [
+  "header",
+  "directory",
+  "spl",
+  "keyBlob",
+  "gap",
+  "keySector"
+ ],
+ "bootCodeRegions": [
+  "header",
+  "directory",
+  "spl",
+  "keyBlob"
+ ],
+ "keySector": {
+  "offset": 1044480,
+  "size": 4096
+ },
+ "splStatus": "boot-code-unknown",
+ "layouts": [
+  {
+   "packages": 267,
+   "regions": {
+    "header": [
+     [
+      0,
+      32
+     ]
+    ],
+    "directory": [
+     [
+      32,
+      160
+     ]
+    ],
+    "spl": [
+     [
+      160,
+      14696
+     ]
+    ],
+    "keyBlob": [
+     [
+      14696,
+      14741
+     ]
+    ],
+    "gap": [
+     [
+      14741,
+      16384
+     ]
+    ],
+    "keySector": [
+     [
+      1044480,
+      1048576
+     ]
+    ]
+   },
+   "appOffset": 16384,
+   "keySectorFromHead": true,
+   "splBody": "4e3b4c22:14536",
+   "splDecode": "decoded-code-like"
+  },
+  {
+   "packages": 5,
+   "regions": {
+    "header": [
+     [
+      0,
+      32
+     ]
+    ],
+    "directory": [
+     [
+      32,
+      160
+     ]
+    ],
+    "spl": [
+     [
+      160,
+      14544
+     ]
+    ],
+    "keyBlob": [
+     [
+      14544,
+      15243
+     ]
+    ],
+    "gap": [
+     [
+      15243,
+      16384
+     ]
+    ],
+    "keySector": [
+     [
+      1044480,
+      1048576
+     ]
+    ]
+   },
+   "appOffset": 16384,
+   "keySectorFromHead": true,
+   "splBody": "b5a07159:14384",
+   "splDecode": "not-decodable-under-tried-transforms"
+  },
+  {
+   "packages": 2,
+   "regions": {
+    "header": [
+     [
+      0,
+      32
+     ]
+    ],
+    "directory": [
+     [
+      32,
+      160
+     ]
+    ],
+    "spl": [
+     [
+      160,
+      14648
+     ]
+    ],
+    "keyBlob": [
+     [
+      14648,
+      15403
+     ]
+    ],
+    "gap": [
+     [
+      15403,
+      16384
+     ]
+    ],
+    "keySector": [
+     [
+      1044480,
+      1048576
+     ]
+    ]
+   },
+   "appOffset": 16384,
+   "keySectorFromHead": true,
+   "splBody": "b07f1134:14488",
+   "splDecode": "not-decodable-under-tried-transforms"
+  },
+  {
+   "packages": 1,
+   "regions": {
+    "header": [
+     [
+      0,
+      32
+     ]
+    ],
+    "directory": [
+     [
+      32,
+      160
+     ]
+    ],
+    "spl": [
+     [
+      160,
+      4256
+     ]
+    ],
+    "keyBlob": [
+     [
+      4256,
+      4301
+     ]
+    ],
+    "gap": [
+     [
+      4301,
+      16384
+     ]
+    ],
+    "keySector": [
+     [
+      1044480,
+      1048576
+     ]
+    ]
+   },
+   "appOffset": 16384,
+   "keySectorFromHead": true,
+   "splBody": "349a72e1:4096",
+   "splDecode": "not-decodable-under-tried-transforms"
+  },
+  {
+   "packages": 1,
+   "regions": {
+    "header": [
+     [
+      0,
+      32
+     ]
+    ],
+    "directory": [
+     [
+      32,
+      160
+     ]
+    ],
+    "spl": [
+     [
+      160,
+      14720
+     ]
+    ],
+    "keyBlob": [
+     [
+      16288,
+      16384
+     ]
+    ],
+    "gap": [
+     [
+      14720,
+      16288
+     ]
+    ],
+    "keySector": [
+     [
+      1044480,
+      1048576
+     ]
+    ]
+   },
+   "appOffset": 16384,
+   "keySectorFromHead": true,
+   "splBody": "52a03faa:14560",
+   "splDecode": "not-decodable-under-tried-transforms"
+  },
+  {
+   "packages": 1,
+   "regions": {
+    "header": [
+     [
+      0,
+      32
+     ]
+    ],
+    "directory": [
+     [
+      32,
+      160
+     ]
+    ],
+    "spl": [
+     [
+      160,
+      14604
+     ]
+    ],
+    "keyBlob": [
+     [
+      14604,
+      14649
+     ]
+    ],
+    "gap": [
+     [
+      14649,
+      16384
+     ]
+    ],
+    "keySector": [
+     [
+      1044480,
+      1048576
+     ]
+    ]
+   },
+   "appOffset": 16384,
+   "keySectorFromHead": true,
+   "splBody": "64ccc63e:14444",
+   "splDecode": "decoded-code-like"
+  }
+ ],
+ "splDecode": {
+  "349a72e1:4096": "not-decodable-under-tried-transforms",
+  "4e3b4c22:14536": "decoded-code-like",
+  "52a03faa:14560": "not-decodable-under-tried-transforms",
+  "64ccc63e:14444": "decoded-code-like",
+  "b07f1134:14488": "not-decodable-under-tried-transforms",
+  "b5a07159:14384": "not-decodable-under-tried-transforms"
+ },
+ "undecodedSplPackages": {
+  "count": 9,
+  "splStatus": "boot-code-unknown",
+  "packages": [
+   {
+    "id": "audiorouter",
+    "body": "52a03faa:14560"
+   },
+   {
+    "id": "b1",
+    "body": "b5a07159:14384"
+   },
+   {
+    "id": "beetle",
+    "body": "b5a07159:14384"
+   },
+   {
+    "id": "beetleblue",
+    "body": "b5a07159:14384"
+   },
+   {
+    "id": "clatter",
+    "body": "b07f1134:14488"
+   },
+   {
+    "id": "dx747",
+    "body": "b07f1134:14488"
+   },
+   {
+    "id": "etch",
+    "body": "b5a07159:14384"
+   },
+   {
+    "id": "picovave",
+    "body": "349a72e1:4096"
+   },
+   {
+    "id": "rupture",
+    "body": "b5a07159:14384"
+   }
+  ]
+ }
+}

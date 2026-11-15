@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEngine, EMULATOR_DIR } from "./engine.mjs";
 import { DEFAULT_SET } from "./firmware-survey.mjs";
-import { container, rawFlash, unpackFlash, chipKey, unmask, le16, le32 } from "./fwscport.mjs";
+import { container, rawFlash, unpackFlash, chipKey, unmask, unscramble, le16, le32, CHIP_KEY_VECTORS } from "./fwscport.mjs";
 
 const all = process.argv.includes("--all");
 const engine = await loadEngine();
@@ -46,7 +46,7 @@ function filePos(file, flashOffset) {
   throw new Error("no flash image");
 }
 
-const T = { packages: 0, unchanged: 0, keyChanged: 0, keyChangedRefusedByBoth: 0, sameKeyBadCrc: 0, crcFieldOnly: 0, noAppArea: 0, noKeyEntry: 0, mismatches: [] };
+const T = { chipKeyVectors: 0, packages: 0, unchanged: 0, keyChanged: 0, keyChangedRefusedByBoth: 0, sameKeyBadCrc: 0, crcFieldOnly: 0, noAppArea: 0, noKeyEntry: 0, mismatches: [] };
 const blobs = new Map();
 for (const e of entries) {
   const pkg = new Uint8Array(readFileSync(resolve(EMULATOR_DIR, e.package)));
@@ -90,6 +90,21 @@ for (const e of entries) {
   {
     const f = variant((x) => { x[filePos(pkg, cfg.at + 16)] ^= 0x20; });
     if (!unpackFlash(rawFlash(f)).ok && engineBoot(f).rc !== 0) T.noKeyEntry++; else T.mismatches.push(`${e.id}: no-key-entry`);
+  }
+}
+// chip_key boundaries: for each known-answer vector, a package whose key blob is the vector and whose app area is scrambled with the vector's key must boot to the same window on the ENGINE
+// (so the engine derives that key from that blob) and the port must derive the same key. The window is Felucca's own, decrypted under its real key.
+if (!all) {
+  const e = entries.find((x) => x.id === "felucca") ?? entries[0];
+  const pkg = new Uint8Array(readFileSync(resolve(EMULATOR_DIR, e.package))), raw = rawFlash(pkg), u = unpackFlash(raw);
+  const cfg = u.entries.find((h) => h.name === "isd_config.ini"), area = u.entries.find((h) => h.name === "app_dir_head").offset;
+  for (const v of CHIP_KEY_VECTORS) {
+    const blob = Uint8Array.from(Buffer.from(v.blob, "hex")), f = pkg.slice(), scrambled = u.xip.slice();
+    unscramble(scrambled, 0, scrambled.length, 0, v.key);
+    f.set(blob, filePos(pkg, cfg.offset));
+    f.set(scrambled, filePos(pkg, area));
+    const r = unpackFlash(rawFlash(f)), eb = engineBoot(f);
+    if (chipKey(blob) === v.key && r.ok && r.key === v.key && equal(r.xip, u.xip, u.size) && eb.rc === 0 && equal(eb.xip, u.xip, u.size)) T.chipKeyVectors++; else T.mismatches.push(`chip_key vector "${v.pins}": port key ${chipKey(blob)}, engine rc ${eb.rc}`);
   }
 }
 console.log(JSON.stringify({ mode: all ? "all catalogue packages" : "17 surveyed firmware", ...T, blobVariants: [...blobs.values()] }, null, 1));

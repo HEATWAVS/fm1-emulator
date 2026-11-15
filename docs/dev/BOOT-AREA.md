@@ -1,6 +1,6 @@
 # Boot area: evidence ledger (Component 7, Stage 7A)
 
-Last updated: 2026-11-15. Status: **Stage 7A (evidence), reviewed and approved.** The diagnostic classifier (7B) and the scenarios (7C) are not implemented.
+Last updated: 2026-11-15. Status: **Stage 7A (evidence): committed (`d7832e0`). Stage 7B (the diagnostic classifier and its tests): implemented, see "Stage 7B" below.** The curated scenarios (7C) are not started.
 
 **Nothing here states what a physical FM-1 does.** Every entry below is a statement about this emulator, about the firmware packages, about decoded structure, or a claim made in project documentation. An emulator-defined verdict about the boot area must never be read as proof that a real unit is bricked, bootable or recoverable.
 
@@ -82,12 +82,55 @@ The decoder accepts about 82 % of positions of noise, so **a successful decode o
 - Changed and indeterminate byte counts kept apart per region.
 - No rule may cite L11 or L13 as an established fact.
 
+## Stage 7B: the diagnostic classifier
+
+**What it is.** `ci/machine/bootarea.mjs` (pure) compares a flash image with an intact reference under the emulator's own package-unpacker rules (`fwscport.mjs`) and the package structure of 7A, and reports flags, a primary label and per-rule evidence. `bootareadiag.mjs` is the read-only machine adapter. **It is a diagnostic, not a boot gate:** `Fm1Machine.boot` and `machine.mjs` are untouched and never consult it, there is no boot ROM, no SPL execution, no update loader and no recovery model. `hardwareBootability` is fixed to `"unknown"`: an unpacker refusal is **not** proof that a physical unit is bricked, and an accepted image is not proof that one boots.
+
+**Inputs.** The flash image; the intact reference (required for any verdict: without a valid one the primary label and the bootability are `not-evaluable` and only per-rule diagnostics of the image itself are given); optional indeterminate ranges (inclusive `[lo, hi]`, the chip-profile engine's list); optional `assume` (a HYPOTHETICAL recovery assumption). Malformed ranges or an unknown assumption throw `RangeError`; a bad image or reference is a result, not an error.
+
+**Regions** are derived from the **intact reference's** directory, never from the damaged image: `header` (0 to 0x20), `directory` (the heads, up to the terminating head), `spl` (`uboot.boot` body), `keyBlob` (`isd_config.ini` body), `gap` (the bytes below the app area that none of those cover: one interval after the blob in 5 layouts, two in one; it is all 0xFF in every package), `appArea` (0x4000, for the reference's decrypted window), `keySector` (0xFF000, 4096 bytes, named by the `key_mac` head), `other`. Each byte belongs to exactly one (first match in that order). The committed `fixtures/bootarea-layout.json` records the 6 layouts, derived from all 277 packages (regenerate/check: `node ci/machine/bootareacatalogue.mjs [--write]`); a full-tier test regenerates it.
+
+**Counts.** Per region the report keeps three independent numbers: `changed` (bytes that differ from the reference), `indeterminate` (bytes physically unknown after an interrupted cycle, ranges merged) and `both`, plus `changedKnown = changed - both`. A byte inside an unknown range holds a placeholder or a synthetic fill, so it is not evidence of a write: **rules use `changedKnown` for "written" and `indeterminate` for "at risk"**, and neither count absorbs the other. A synthetic `old` outcome that leaves every byte equal to the reference still reports the region at risk. A byte missing from a shorter image counts as changed (`image-length-differs`).
+
+**Emulator part.** The damaged image is run through the port. The report gives the unpack result (`accepted` / `refused`) and the exact refusal text, whether the key was checked or came from the unchecked fallback, the derived key, whether it differs from the reference's, whether the decrypted window differs (and by how many bytes). A bad key-blob CRC alone is never a refusal (flag `key-blob-crc-fails`; the fallback key is the same key in most single-bit cases). If unknown bytes lie in what the unpacker reads (directory, key blob, app area) the verdict is `not-evaluable` with flag `emulator-result-on-placeholder-bytes`: the result would be on placeholder bytes. If the image's own directory never terminates, the rules about what that directory led to (`key-blob-crc-fails`, `derived-key-differs`, `app-window-differs`) are `not-evaluable`; no offset is ever taken from the damaged image.
+
+**Labels and precedence:** `unmodelled` > `boot-area-at-risk` > `emulator-unbootable` > `boot-code-unknown` > `boot-area-written` > `emulator-bootable` (else `not-evaluable`). `flags` always lists every applicable label and detail flag, even when a higher one wins.
+
+| Label | When | Evidence |
+|---|---|---|
+| `unmodelled` | any changed or unknown byte at 0xFF000 | PACKAGE (the `key_mac` head names it), UNKNOWN (contents and role) |
+| `boot-area-at-risk` | unknown bytes in header, directory, SPL, key blob, gap or 0xFF000 (including when the bytes still equal the reference) | EMULATOR (the engine's own indeterminate list) |
+| `emulator-unbootable` | the unpacker refuses the image while it accepts the reference | EMULATOR only |
+| `boot-code-unknown` | a changed or unknown byte in header, directory, SPL or key blob (and the unpacker's verdict does not decide it) | PACKAGE, EMULATOR, DECODED, UNKNOWN |
+| `boot-area-written` | a changed (known) byte in the gap | PACKAGE, UNKNOWN |
+| `emulator-bootable` | the unpacker accepts the image | EMULATOR |
+
+Every rule is listed in the report with its evidence labels, region, consequence and status (`applies` / `clear` / `not-evaluable`): see `RULES` in `bootarea.mjs`. A changed SPL body is **never** `emulator-unbootable` for differing; the SPL status is `boot-code-unknown` for every package, and the nine packages whose body did not decode (L9b) keep that status with `spl.decode = not-decodable-under-tried-transforms`. `app_dir_head2` is INFERRED, appears only as a note with `used: false` and supports no claim.
+
+**Recovery.** `recovery.assessment` is always `recovery-unknown` (UNKNOWN). With `assume` set, `recovery.hypothetical` carries `HYPOTHETICAL: true`, `evidence: UNKNOWN` and a minimal outcome: `download-mode-available` → `recoverable-by-reinstall`, `external-programmer-available` → `recoverable-by-external-reflash`, `pessimistic-no-recovery-path` → `unrecoverable` (each `nothing-to-recover` for an image with no applicable boot-area label). It changes nothing else in the report. These are assumptions, not evidence: the ROM download mode is DOCUMENTED only (L13).
+
+**New decisions made in 7B (flagged for review).** (1) A changed or unknown byte in the *directory* or the *key blob* (where the emulator still accepts the image) is `boot-code-unknown`, like the header and SPL: the SPL's use of them is unknown (L11); the 7B decisions fixed header, gap, SPL and 0xFF000 only. (2) A directory/key-blob/app-area byte that is unknown makes the emulator verdict `not-evaluable` (placeholder bytes), though the at-risk label still applies. (3) Without a valid reference the primary label is `not-evaluable` even when the image shows unknown bytes (the flags still say `boot-area-at-risk`). (4) A truncated image counts its missing bytes as changed; a truncated directory image is therefore `unmodelled` by precedence while its refusal and `directory-unterminated` are still reported.
+
+**The divergence with the engine (EMULATOR, not hardware).** The engine boots a machine whose sector 0 is zeroed, because it unpacks the *package*, never the live flash (L2): the existing KNOWN LIMITATION tests stay and say so. The diagnostic labels that same flash `emulator-unbootable` ("no chip key or app area in the flash image"): the unpacker's rules, applied to the live flash. Neither says what hardware does. Pinned by a quick test (flash read, no run) and a full-tier test (the machine boots, draws, and still equals an undiagnosed twin).
+
+**The machine adapter** reads `flash()`, `baseFlash()` and `indeterminateRanges()` and nothing else (a call spy test proves it; it never calls `observe()`, `run()`, `armFault`, `cutPower`, `powerCycle` or anything that changes state), and a before/after snapshot (flash, base, frames, audio accumulators, status, clock, fault state, cycles, chip status, indeterminate list) proves nothing changed, on the shipped engine and the fault-injection engine.
+
+**Survey evidence (EMULATOR observation, L14):** a quick test re-derives from `docs/dev/fault-survey.json` that none of the 61 firmware-issued flash cycles (7 firmware, 0x97000 to 0xFCFFF) touches the boot region in the 8 s survey. It says nothing about other input or longer runs.
+
+**Key-derivation boundaries.** `CHIP_KEY_VECTORS` in `fwscport.mjs` are seven synthetic blobs that pin the 0xE0/0x10 clamps and the strict comparison; `fwscportcheck.mjs` crafts a package for each (blob and app area scrambled with the listed key) and the shipped engine boots it to the expected window, so the engine derives exactly those keys (EMULATOR). The catalogue's two real blobs never reach those branches.
+
+### Tests (counts in TESTING.md)
+
+Quick tier (shipped engine): rule table and vocabulary; layout fixture against the 7A facts; scenario catalogue; 16 pure scenarios on Felucca (header, sector 0 zeroed/erased, key blob changing the key, bad CRC with the same key, stored CRC only, renamed `app_dir_head` / key entry, SPL bit, SPL uncertain, gap, 0xFF000, app only, unterminated directory, `old` outcome on sector 0 and on 0xFF000); app-area boundaries; unterminated directory; purity; the 17 surveyed firmware and the nine undecoded-SPL packages; the nine's SPL status; missing/invalid reference; independent counts; recovery defaults and hypotheticals; survey evidence; the adapter; the divergence. Full tier: all 277 intact packages, the regenerated fixture, the running divergence; with the chip engine (SKIPPED without it), interrupted 4 KiB erases at sector 0 and 0xFF000 under the outcomes `old`, `ff` and `zero`, diagnosed powered off and after the reboot (at-risk and unmodelled hold whatever bytes the outcome leaves), and the adapter on the fault-injection engine.
+
 ## Reproduction
 
 ```bash
-node ci/machine/fwscportcheck.mjs            # 17 firmware, every condition (about 1 s)
+node ci/machine/fwscportcheck.mjs            # 17 firmware, every condition and the chip_key vectors (about 1 s)
 node ci/machine/fwscportcheck.mjs --all      # the unchanged-package condition for all 277
 node ci/machine/bootareafacts.mjs            # the PACKAGE facts match fixtures/bootarea-facts.json
+node ci/machine/bootareacatalogue.mjs        # the layout fixture matches the 277 packages (--write regenerates it)
+node ci/machine/selftest.mjs --filter "boot area"   # the 7B tests (quick and full tier)
 ```
 
 The SPL scan is a one-off made with a scratch tool outside the repository (a copy of the `fm1-isa` crate plus a linear-sweep scanner); `fixtures/bootarea-spl-findings.json` records its structural results only. It can be rebuilt from the description above.
