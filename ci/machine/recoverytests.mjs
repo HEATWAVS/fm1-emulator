@@ -124,7 +124,7 @@ export function registerRecoveryQuickTests(testQuick, { engine }) {
 
   T("the committed fixture is exactly what the committed survey yields, and the catalogue agrees with every row and control it names", () => {
     const f = fixture();
-    if (existsSync(SURVEY_PATH)) assert.equal(readFileSync(FIXTURE_PATH, "utf8"), serialize(buildFixture(JSON.parse(readFileSync(SURVEY_PATH, "utf8")))), "regenerate with: node ci/machine/recoveryfixture.mjs --write");
+    if (existsSync(SURVEY_PATH)) assert.equal(readFileSync(FIXTURE_PATH, "utf8").replace(/\r\n/g, "\n"), serialize(buildFixture(JSON.parse(readFileSync(SURVEY_PATH, "utf8")))), "regenerate with: node ci/machine/recoveryfixture.mjs --write");
     assert.equal(f.version, 1);
     assert.match(f.disclaimer, /not a prediction of the physical chip/);
     assert.deepEqual(f.surveyConfig, { chips: ["puya", "uc25hq80"], timing: "typical", rebootMs: 3000, inputs: true });

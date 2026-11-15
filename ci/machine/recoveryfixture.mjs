@@ -50,7 +50,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     writeFileSync(FIXTURE_PATH, text);
     console.log(`wrote ${FIXTURE_PATH}: ${fixture.rows.length} rows, ${Object.keys(fixture.units).length} units, ${text.length} bytes`);
   } else {
-    const have = readFileSync(FIXTURE_PATH, "utf8");
+    const have = readFileSync(FIXTURE_PATH, "utf8").replace(/\r\n/g, "\n");     // a checkout may convert line endings
     if (have !== text) { console.error("the committed fixture differs from what the survey yields: run with --write"); process.exit(1); }
     console.log(`the fixture matches the survey (${fixture.rows.length} rows)`);
   }
