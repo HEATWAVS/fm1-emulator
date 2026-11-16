@@ -17,7 +17,7 @@ The unified engine is built from fm1-emu v0.3.0 (commit `631b790b191e87ea8b796d3
 project's patches (`ci/engine/chip-profiles.patch`, `ci/engine/unified-engine.patch`), and with `usb.rs` taken whole
 from fm1-emu commit `9acb2df464c7d91347f0c114423d955d909f4448` (blob `43af499a63`), which differs from v0.3.0's
 copy only in its SPDX line (v0.3.0 declares `GPL-3.0-only`, that commit declares `MIT`, as the rest of the
-repository). The source and the exact build are described in `docs/dev/ARCHITECTURE.md` and `ci/engine/README.md`.
+repository). From fm1-emu commit `d2bcc331d039855060dcef78c3bcaebb193b213a` (MIT, the same notice) the unified engine also takes PLL0's two boot-state register values (Component 8, Stage 4). The source and the exact build are described in `docs/dev/ARCHITECTURE.md` and `ci/engine/README.md`.
 
 ## Bundled firmware
 The `.fwsc` files under `site/` are the separate work of their authors, redistributed unchanged

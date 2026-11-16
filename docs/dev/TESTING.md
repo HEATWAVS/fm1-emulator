@@ -175,3 +175,20 @@ Passed: the panel renders (orange border in a test mode); no console errors from
 **Untested:** the SMK-37 board error path in a chip mode (no SMK-37 package is bundled in this build); the Electron packaged app (only the page in a browser was run); a second browser or OS; Copy report under file:// / fm1://app permissions; long sessions in a test mode (the audio worker ran about 15 s per check); the in-app comparison with JIT (it uses the interpreter); any firmware outside the ones named.
 
 **Known limitations (honest).** The machine quick tier measured 17.4 to 19.7 s across this session (about 16.1 s on the day Stage 7C was measured; system load varies) against the 20 s hard limit of `npm test`: the margin is thin and was thin before Stage 2. Stage 2's four quick tests take about 20 ms in total and the application tests are 0.1 s, so Stage 2 is not the cause; if `npm test` ever hits the limit, move rows to the full tier as D93 did. The page's comparison feeds no key presses, so firmware that stay silent without input (Felucca) show silent audio in every configuration. Audio-in content conversion remains unverified (queue behaviour only). The unified engine's hash is verified for one toolchain. None of this is hardware evidence.
+
+## Component 8, Stage 4: PLL0 boot state in the unified engine (2026-11-16, Windows 11, Node 24.19.0, rustc 1.97.1)
+
+**Build.** `node ci/engine/build.mjs --unified` (into a scratch directory, twice): the unified engine `ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b`, 2,747,410 bytes, byte-identical across the two builds; the chip engine `28dacdb4…764e` reproduced as before. Pin updated (patch sha256 `e4a7f043…`, engine hash and size); the shipped `fm1_web.wasm` and the pinned chip engine untouched.
+**Rust (workspace on the unified source, with the oracle transcripts):** 61 + 7 + 96 + 4 + 9 = **177 passed, 0 failed, 0 ignored** (includes `tests::pll0_reads_as_the_bootloader_left_it` and the 4 chip-oracle replays incl. fault transcripts).
+**Comparisons against the Stage 1 baseline:**
+| Check | Result |
+|---|---|
+| A. Shipped vs unified, 277 packages, USB on, interpreter, 3 s, original flash model | **262 identical, 15 differ, 0 errors**; the 15 are exactly the Stage 3 prediction (`amb`, `amenity`, `assid`, `atek303`, `choppah`, `ctl`, `fm1-ripple`, `fmfam`, `krisjangle`, `loom`, `midimon`, `mutable`, `polly`, `remotefm1`, `sidou`), per-package differences identical to the Stage 3 scratch build; all 15: emulated clock follows audio; audible within 3 s with no input: `amb`, `mutable`, `sidou` |
+| B. JIT subset (60 firmware, JIT on, 3 s) vs shipped | 57 identical, 3 differ (`assid`, `atek303`, `midimon`: all in the 15); the host interface is untouched (the old `fm1_jit_compile` protocol still works) |
+| C. Chip profiles vs the pinned chip engine, unified in XIP-tail mode 1 | interpreter: 60 firmware x Puya/UC25HQ80 = 120 runs, 114 identical, the 6 others `assid`, `atek303`, `midimon` under both profiles (in the 15); JIT: 30 x 2 = 60 runs, 56 identical, the 4 others `atek303`, `fmfam` (in the 15). (Mode 0 vs mode 1 differ in 2 of the 120 runs: the known XIP-tail firmware.) |
+| D. USB audio-in queue traces, 8 firmware vs shipped | **8 of 8 identical** |
+| E. `npm test` | PASS |
+| E. Machine quick tier | 210/210 pass (18.0 s; limit 20 s in npm test) |
+| E. Machine full tier | 375/375 pass, 0 failed, 0 SKIPPED (chip engine present, 774.0 s) |
+Added: a full-tier test for the PLL0 boot state (`amb`, `ctl`, `choppah`, `polly` fast-forward on the shipped engine and follow the audio on the unified one; `amb`, `mutable`, `sidou` silent on shipped and audible on unified; `felucca` unchanged), a pin test of the PLL0 constants in the patch, and the report's PLL0 note in the application tests.
+**Untested / limits:** the 12 of the 15 that make no sound in 3 s were not run with key presses; the PLL0 values are not checked on hardware; reproducibility is for one toolchain; the Electron app was not run.

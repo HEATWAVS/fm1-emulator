@@ -89,16 +89,19 @@ with a clock the test controls. Do not use them while the machine is rendering.
 (`fm1_usb_plug`, `fm1_usb_conf`, `fm1_usb_conf_len`, `fm1_has_usr`), a USB audio-in host (`fm1_audio_in`, `fm1_audio_in_buf`, `fm1_audio_pending`,
 `fm1_has_audio_in`) and `fm1_xip_tail` (the switch below). It is the engine the application uses for its chip-test modes; the shipped
 `site/emulator/fm1_web.wasm` stays the Default. Its pin is `pin.json` `unified`; its binary is **committed** as `site/emulator/fm1_web_unified.wasm`
-(sha256 `58bacde65163d8de17296c36a0da365a5c3e94a2616ba99e4b59bb5b61be3d30`, 2,746,487 bytes, rustc 1.97.1 on Windows: the one toolchain verified), so the
+(sha256 `ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b`, 2,747,410 bytes, rustc 1.97.1 on Windows: the one toolchain verified; Stage 2's was `58bacde6…`, 2,746,487 bytes, before the PLL0 boot state below), so the
 tests and the app never need a build. The build needs a clone of the **whole** upstream repository (it reads commit `9acb2df`; a shallow clone is refused).
 
 How it is made: the pinned v0.3.0 tree with `chip-profiles.patch`, then `usb.rs` replaced **whole** by upstream commit
 `9acb2df464c7d91347f0c114423d955d909f4448`'s (blob `43af499a63d5d8d00169f38fc53df8ebe9900fae`; the build proves it differs from v0.3.0's only at line 36,
-the SPDX identifier, `GPL-3.0-only` to `MIT`), then `unified-engine.patch` (8 hunks: `fwsc.rs`, `usb.rs`, `fm1-web/src/lib.rs`). The pinned v0.3.0 `usb.rs` is
+the SPDX identifier, `GPL-3.0-only` to `MIT`), then `unified-engine.patch` (12 hunks: `fwsc.rs`, `fm1-soc/src/lib.rs` (the PLL0 boot state and its test), `usb.rs`, `fm1-web/src/lib.rs`). The pinned v0.3.0 `usb.rs` is
 never used in a unified build. Notice: `LICENSES/MIT-fm1-emu.txt`, `NOTICE.md`.
 
 Stage 2's scratch rebuild gate: the Stage 1 validated binary (built with the v0.3.0 `usb.rs`) and this build (with the `9acb2df` one) are the **same binary**
 (identical sha256), so the Stage 1 measurements stand for it; the pipeline reproduces both `fm1_web_chips.wasm` (`28dacdb4…`) and the unified engine on one machine.
+
+### PLL0 boot state (Component 8, Stage 4; the unified engine only)
+`Soc::new` sets PLL0's two control words as a bootloader leaves them, taken verbatim from upstream fm1-emu commit `d2bcc331d039855060dcef78c3bcaebb193b213a` (2026-11-07, first in v0.5.0): `PLL0_CON0` = `0x119a0` := `0x4540_0203`, `PLL0_CON1` = `0x119a4` := `0x3f50_3026`, set in that order at the end of `Soc::new` with `sfr_set`; they stay plain registers. Nothing else of v0.4.0 or later is used. **The shipped Default engine is unchanged and starts every analog register at 0, so the unified engine deliberately differs from it for firmware that checks PLL0** (felucca-bsp's audio driver does, before it starts ALNK0): `amb`, `amenity`, `assid`, `atek303`, `choppah`, `ctl`, `fm1-ripple`, `fmfam`, `krisjangle`, `loom`, `midimon`, `mutable`, `polly`, `remotefm1`, `sidou` of the 277 bundled packages start their audio here and not on Default. Upstream attributes the values to reads off FM-1s (felucca-bsp `chip/fm1_clock.h`); **this project has not verified them on hardware.**
 
 ### XIP-tail switch (`fm1_xip_tail(mode)`, before a boot)
 Mode 0 (the default) leaves the bytes after the app area as stored, as the shipped engine does; mode 1 decrypts them up to the protected image's end, as

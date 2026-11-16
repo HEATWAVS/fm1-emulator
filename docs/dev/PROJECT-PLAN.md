@@ -54,5 +54,7 @@ compared, problems reported in a copyable report, with the original application 
 | 1 | Unified engine in scratch: v0.3.0 + chip profiles + USB exports + USB audio-in host + XIP-tail switch; validated against the shipped engine (277 of 277 interpreter, 60 of 60 JIT) and the pinned chip engine | **Done** (scratch, reported) |
 | Foundation | Upstream version and licensing investigation: stay on the v0.3.0 base now, gated rebase later (D94); `usb.rs` from upstream `9acb2df` (D95) | **Done** (scratch, reported) |
 | 2 | **Integration**: engine pipeline + committed unified engine (`58bacde6…`), notices, application chip test modes, report, comparison, tests, docs | **Done, commits `8078f69` (engine pipeline, binary, notices), `6f06115` (application modes) and the documentation commit (`git log`)**; see CURRENT-STATUS.md and TESTING.md for what was and was not verified |
+| 3 | Rebase investigation onto v0.4.0 / v0.5.1 / HEAD (scratch only): feasible but changes behaviour for 22 of 277 packages, breaks the JIT host interface; **decision: do not rebase now** (D94) | **Done** (scratch, reported) |
+| 4 | **PLL0 boot state** (upstream `d2bcc33`) added to the unified engine only: 15 packages start their audio | **Done** (D100); unified engine now `ba1ba889…` |
 
 Not in Stage 2 (not approved, not done): replacing the pinned chip engine by the unified one in the tests (D96), a rebase onto a newer upstream, an in-app fault-injection control, an in-app flash-ID or unique-ID control, the SMK-37 board in chip modes, any hardware-accuracy claim.
