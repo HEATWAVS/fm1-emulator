@@ -177,7 +177,7 @@
     "fm1_test_set_wp"
   ],
   "unified": {
-    "_about": "The unified engine (Component 8 Stage 2): the chip-profile engine plus the USB exports the shipped engine has, a USB audio-in host and the XIP-tail switch (ci/engine/unified-engine.patch, applied on top of chip-profiles.patch), with usb.rs taken whole from upstream commit 9acb2df (MIT header) first. Built by ci/engine/build.mjs --unified into fm1_web_unified.wasm; the committed copy is site/emulator/fm1_web_unified.wasm.",
+    "_about": "The unified engine (Component 8 Stage 2): the chip-profile engine plus the USB exports the shipped engine has, a USB audio-in host and the XIP-tail switch (ci/engine/unified-engine.patch, applied on top of chip-profiles.patch; Stage 4 added upstream d2bcc331’s PLL0 boot state to it), with usb.rs taken whole from upstream commit 9acb2df (MIT header) first. Built by ci/engine/build.mjs --unified into fm1_web_unified.wasm; the committed copy is site/emulator/fm1_web_unified.wasm.",
     "usbSource": {
       "path": "crates/fm1-soc/src/usb.rs",
       "commit": "9acb2df464c7d91347f0c114423d955d909f4448",
@@ -186,15 +186,15 @@
     },
     "patch": {
       "file": "unified-engine.patch",
-      "sha256": "350ab585c83f33fe9c7bd9bf78235da41f1f44ddb77d67e794287658277a6943"
+      "sha256": "e4a7f04322e3887d96116fe55f9be11da82e25607403f01868c58de99faac5df"
     },
     "artifact": "fm1_web_unified.wasm",
     "shippedCopy": "site/emulator/fm1_web_unified.wasm",
     "toolchains": {
       "rustc 1.97.1 (8bab26f4f 2026-07-14)": {
         "host": "x86_64-pc-windows-msvc",
-        "wasmSha256": "58bacde65163d8de17296c36a0da365a5c3e94a2616ba99e4b59bb5b61be3d30",
-        "wasmBytes": 2746487
+        "wasmSha256": "ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b",
+        "wasmBytes": 2747410
       }
     },
     "expectedExports": [

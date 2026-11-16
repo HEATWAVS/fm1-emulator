@@ -90,12 +90,12 @@ await test("comparison: differences are named, the JEDEC inference is labelled a
 });
 
 const D = { generated: "2026-11-16T00:00:00.000Z", app: { name: "FM-1 Emulator" }, firmware: { id: "quadro-fm1", name: "quadro-fm1", sha256: "ab".repeat(32) },
-  mode: mode.MODES[1], timing: "typical", engine: { file: "fm1_web_unified.wasm", sha256: "58bacde6" }, run: { mhz: 100, jit: false, board: 0, status: { ms: 4200, halted: false, flashRevision: 2, wip: false, unspecified: 1, notModeled: 1, lastNotModeled: 0x4b, uidUnknownReads: 3, hasAudioIn: false, audioPending: 0, usbConfigured: true } },
+  mode: mode.MODES[1], timing: "typical", engine: { file: "fm1_web_unified.wasm", sha256: "ba1ba889" }, run: { mhz: 100, jit: false, board: 0, status: { ms: 4200, halted: false, flashRevision: 2, wip: false, unspecified: 1, notModeled: 1, lastNotModeled: 0x4b, uidUnknownReads: 3, hasAudioIn: false, audioPending: 0, usbConfigured: true } },
   sectors: { count: 1, list: [0xd6000] }, comparison: null };
 
 await test("report: states the mode, engine, chip, counters and flash changes, labels the profiles as reference models, and never claims hardware accuracy", () => {
   const t = mode.buildReport(D);
-  for (const s of ["FM-1 EMULATOR DIAGNOSTIC REPORT", "package sha256: " + "ab".repeat(32), "[TEST MODE: nothing is saved]", "fm1_web_unified.wasm (sha256 58bacde6)", "Puya P25Q80H reference profile, JEDEC 0x85 0x60 0x14, typical cycle times",
+  for (const s of ["FM-1 EMULATOR DIAGNOSTIC REPORT", "package sha256: " + "ab".repeat(32), "[TEST MODE: nothing is saved]", "fm1_web_unified.wasm (sha256 ba1ba889)", "boot state: PLL0 starts at the values upstream fm1-emu d2bcc33 attributes to a bootloader (read off FM-1s per upstream; not verified here)", "Puya P25Q80H reference profile, JEDEC 0x85 0x60 0x14, typical cycle times",
     "emulated clock: 100 MHz; JIT: off; board: FM-1", "flash revision (counts program/erase operations accepted): 2", "unspecified (ignored by the model): 1", "opcodes outside the model: 1 (last 0x4B)", "unique-ID reads answered without a configured ID: 3",
     "flash sectors changed from the package's flash: 1 (0xD6000)", "REFERENCE models", "Neither has been confirmed to match a physical FM-1's chip", "not a hardware measurement"]) assert.ok(t.includes(s), s);
   assert.ok(!/matches (the )?(real|physical) (hardware|chip)/i.test(t.replace(/Neither has been confirmed to match a physical/g, "")), "no accuracy claim");
@@ -106,6 +106,7 @@ await test("report: Default mode says the original engine has no chip counters; 
   const t = mode.buildReport({ ...D, mode: mode.MODES[0], engine: { file: "fm1_web.wasm", sha256: null }, run: { mhz: 100, jit: true, board: 0, status: { ms: 1000, halted: null, flashRevision: 0, wip: null, unspecified: null, notModeled: null, lastNotModeled: null, uidUnknownReads: null, hasAudioIn: null, audioPending: null, usbConfigured: null } },
     comparison: { seconds: 3, rows: [{ label: "Default", result: result() }, { label: "Broken", error: "boom" }], differences: ["something differs"] } });
   assert.ok(!t.includes("[TEST MODE"), "Default is not a test mode");
+  assert.ok(!t.includes("boot state: PLL0"), "Default runs the shipped engine, which has no PLL0 boot state");
   assert.ok(t.includes("chip counters: not available (the original engine has no chip model)"));
   assert.ok(t.includes("flash chip: the original flash model of the shipped engine"));
   assert.ok(t.includes("could not run: boom") && t.includes("- something differs") && t.includes("COMPARISON (same firmware"));

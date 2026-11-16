@@ -23,6 +23,69 @@ index 5b49b81..46fb697 100644
          let blk = area + first + ((area + size).saturating_sub(area + first) & !31);
          let mut t = raw[..end].to_vec();
          unscramble(&mut t, blk, end - blk, area, key);
+diff --git a/crates/fm1-soc/src/lib.rs b/crates/fm1-soc/src/lib.rs
+index c926a06..6d1f868 100644
+--- a/crates/fm1-soc/src/lib.rs
++++ b/crates/fm1-soc/src/lib.rs
+@@ -46,6 +46,11 @@ pub use spiflash::{SpiFlash, FLASH_SIZE};
+ pub use spichip::{Chip, ChipKind, Timing};
+ 
+ pub const XIP_BASE: u32 = 0x0200_0000;
++/// PLL0's two control words (JL_ANA) and what they read once a bootloader started the PLL: upstream fm1-emu d2bcc331d039855060dcef78c3bcaebb193b213a
++/// (2026-11-07, first in v0.5.0), taken verbatim. Upstream attributes the values to reads off FM-1s (felucca-bsp chip/fm1_clock.h); they are NOT verified here.
++const PLL0_CON0: u32 = 0x119a0;
++const PLL0_CON1: u32 = 0x119a4;
++const PLL0_BOOT: (u32, u32) = (0x4540_0203, 0x3f50_3026);
+ pub const RAM_BASE: u32 = 0x01c0_0000;
+ pub const OVL_BASE: u32 = 0x0400_0000;
+ pub const SRAM2_BASE: u32 = 0x01f0_0000;
+@@ -403,7 +408,7 @@ impl Soc {
+ 
+     /// `ram_size` in bytes; `xip` = the app binary mapped at XIP_BASE.
+     pub fn new(ram_size: usize, xip: Vec<u8>) -> Self {
+-        Self {
++        let mut soc = Self {
+             board: Board::Fm1,
+             bt_window: BT_WINDOW_BASE,
+             xip,
+@@ -436,7 +441,13 @@ impl Soc {
+             usb: Default::default(),
+             // (FM1_TRACE: a trace shows every instruction as it runs, not a probe's)
+             loop_skip: machine::LoopSkip::new(std::env::var_os("FM1_NO_LOOPSKIP").is_none() && std::env::var_os("FM1_TRACE").is_none()),
+-        }
++        };
++        // PLL0 as the bootloader leaves it, M-VAVE's and m-bootloader's alike (upstream d2bcc33: read off FM-1s, felucca-bsp chip/fm1_clock.h; not verified here).
++        // The BSP's audio driver (AMB-1 1.3.2, CTL-1 1.0.3, CHOPPAH 0.99, Polly 0.6.2) checks these before it starts ALNK0 and leaves the audio off under any other clock.
++        // Plain registers: what a firmware writes reads back. The shipped engine starts every analog register at 0; the unified engine deliberately does not (Component 8, Stage 4).
++        soc.sfr_set(PLL0_CON0, PLL0_BOOT.0);
++        soc.sfr_set(PLL0_CON1, PLL0_BOOT.1);
++        soc
+     }
+ 
+     /// Does a 32-bit load from `addr` only look (no side effect, nothing that depends on the
+@@ -1396,6 +1407,22 @@ mod tests {
+         assert_eq!(soc.flash.revision, rev.wrapping_add(2));
+     }
+ 
++    #[test]
++    fn pll0_reads_as_the_bootloader_left_it() {
++        // felucca-bsp's audio driver: ALNK0 starts only under this clock (fm1_clock.h); values and test from upstream d2bcc33
++        let mut soc = Soc::new(1 << 16, vec![0; 0x1000]);
++        assert_eq!(soc.read32(0x119a0), 0x4540_0203);
++        assert_eq!(soc.read32(0x119a4) & 0x07ff_ffff, 0x0750_3026);
++        assert_eq!(soc.read32(0x119a4), 0x3f50_3026, "the whole word, not only the masked part");
++        // still a plain register: what the firmware writes reads back
++        soc.write32(0x119a0, 0x4540_0200);
++        assert_eq!(soc.read32(0x119a0), 0x4540_0200);
++        // and nothing else in the analog block starts non-zero
++        for a in [0x119a8u32, 0x119ac, 0x11990, 0x11994] {
++            assert_eq!(soc.read32(a), 0, "{a:#x}");
++        }
++    }
++
+     #[test]
+     fn a_power_cut_stops_half_way_through_an_op() {
+         // cut at op 2 (the page program): erased, two of the four bytes programmed, then nothing
 diff --git a/crates/fm1-soc/src/usb.rs b/crates/fm1-soc/src/usb.rs
 index 43af499..d274877 100644
 --- a/crates/fm1-soc/src/usb.rs

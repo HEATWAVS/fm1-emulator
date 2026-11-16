@@ -117,6 +117,7 @@ export function buildReport(d) {
   push("EMULATION MODE");
   push(`  mode: ${d.mode.label}${d.mode.test ? "  [TEST MODE: nothing is saved]" : ""}`);
   push(`  engine: ${d.engine.file}${d.engine.sha256 ? ` (sha256 ${d.engine.sha256})` : ""}`);
+  if (d.mode.engine === "unified") push("  boot state: PLL0 starts at the values upstream fm1-emu d2bcc33 attributes to a bootloader (read off FM-1s per upstream; not verified here), so firmware that checks it starts its audio here and may not on Default");
   if (d.mode.chip) push(`  flash chip: ${d.mode.chip === "puya" ? "Puya P25Q80H reference profile" : "UC25HQ80 reference profile"}, JEDEC ${JEDEC[d.mode.chip].map((b) => hex(b)).join(" ")}, ${d.timing ?? "typical"} cycle times`);
   else push(`  flash chip: ${d.mode.test ? "the original instantaneous flash model (no status register, no busy, no protection)" : "the original flash model of the shipped engine"}`);
   if (d.run) {

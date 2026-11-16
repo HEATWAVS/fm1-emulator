@@ -146,7 +146,7 @@ if (opt.unified) {
   console.log(`  usb.rs replaced by ${UNIFIED.usbSource.commit.slice(0, 8)}'s (blob ${usbBlobId.slice(0, 10)}): exactly one differing line, the SPDX identifier (GPL-3.0-only to MIT)`);
   execFileSync("git", ["-c", "core.autocrlf=false", "apply", "--check", uPatch], { cwd: usrc, env: gitEnv, stdio: "inherit" });
   execFileSync("git", ["-c", "core.autocrlf=false", "apply", uPatch], { cwd: usrc, env: gitEnv, stdio: "inherit" });
-  console.log("  unified-engine.patch applied cleanly (fm1-soc: fwsc.rs, usb.rs; fm1-web: lib.rs)");
+  console.log("  unified-engine.patch applied cleanly (fm1-soc: fwsc.rs, lib.rs (PLL0 boot state), usb.rs; fm1-web: lib.rs)");
   const ur = spawnSync("cargo", ["build", "--release", "-p", "fm1-web", "--target", "wasm32-unknown-unknown", "--target-dir", resolve(opt.out, "target-unified"), "--offline"], { cwd: usrc, env, stdio: "inherit" });
   if (ur.status !== 0) fail(`cargo build (unified) failed (exit ${ur.status})`);
   const uEngine = resolve(opt.out, UNIFIED.artifact);

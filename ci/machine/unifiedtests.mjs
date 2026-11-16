@@ -28,11 +28,14 @@ export const UPSTREAM_NOTICE_SHA256 = "de303af17a9bed9ac5ab105f33ef72b3aa5c658d3
 const lf = (s) => s.replace(/\r\n/g, "\n");
 
 export function registerUnifiedQuickTests(testQuick) {
-  testQuick("unified engine pin: the patch, the usb.rs source and the export list are consistent", () => {
+  testQuick("unified engine pin: the patch (incl. the PLL0 boot state of upstream d2bcc33), the usb.rs source and the export list are consistent", () => {
     const patch = readFileSync(resolve(ROOT, "ci/engine", UNIFIED.patch.file));
     assert.equal(sha(patch), UNIFIED.patch.sha256, "ci/engine/unified-engine.patch is the pinned one (edit it, rebuild with build.mjs --unified, then re-pin)");
     assert.deepEqual([...patch.toString("utf8").matchAll(/^diff --git a\/(\S+)/gm)].map((m) => m[1]),
-      ["crates/fm1-soc/src/fwsc.rs", "crates/fm1-soc/src/usb.rs", "crates/fm1-web/src/lib.rs"], "the unified patch touches exactly these files, and never the pinned usb.rs header");
+      ["crates/fm1-soc/src/fwsc.rs", "crates/fm1-soc/src/lib.rs", "crates/fm1-soc/src/usb.rs", "crates/fm1-web/src/lib.rs"], "the unified patch touches exactly these files, and never the pinned usb.rs header");
+    const text = patch.toString("utf8");
+    for (const s of ["const PLL0_CON0: u32 = 0x119a0;", "const PLL0_CON1: u32 = 0x119a4;", "const PLL0_BOOT: (u32, u32) = (0x4540_0203, 0x3f50_3026);", "d2bcc331d039855060dcef78c3bcaebb193b213a", "soc.sfr_set(PLL0_CON0, PLL0_BOOT.0);", "soc.sfr_set(PLL0_CON1, PLL0_BOOT.1);", "fn pll0_reads_as_the_bootloader_left_it()"]) assert.ok(text.includes(s), `the PLL0 hunk carries: ${s}`);
+    assert.equal((text.match(/^\+.*PLL0/gm) || []).length >= 6, true, "the PLL0 additions are in the patch");
     assert.ok(!/^[-+]\/\/! SPDX/m.test(patch.toString("utf8")), "usb.rs's SPDX line comes from the upstream 9acb2df file, not from this patch");
     assert.deepEqual(UNIFIED.usbSource, { path: "crates/fm1-soc/src/usb.rs", commit: "9acb2df464c7d91347f0c114423d955d909f4448", blob: "43af499a63d5d8d00169f38fc53df8ebe9900fae", sha256: "9d62720b52a0d643d19d076567cfa416" });
     assert.deepEqual([...UNIFIED.expectedExports].sort(), [...new Set([...PIN.expectedExports, ...UNIFIED.addedExports])].sort(), "the unified exports are the chip engine's plus the added ones");
@@ -45,7 +48,7 @@ export function registerUnifiedQuickTests(testQuick) {
     const rustc = Object.keys(UNIFIED.toolchains)[0];
     const v = verifyUnifiedFile(UNIFIED_WASM, { rustc });
     assert.equal(v.hash, "match", `sha256 ${v.sha256}`);
-    assert.equal(v.sha256, "58bacde65163d8de17296c36a0da365a5c3e94a2616ba99e4b59bb5b61be3d30", "the Stage 1 validated binary, identical after the usb.rs source change to 9acb2df's");
+    assert.equal(v.sha256, "ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b", "the Stage 4 unified engine: the Stage 2 engine (58bacde6…, Stage 1 validated) plus the PLL0 boot state");
     assert.equal(v.bytes, UNIFIED.toolchains[rustc].wasmBytes);
     assert.ok(v.exportsOk, `missing ${v.missing} unexpected ${v.unexpected}`);
     assert.ok(v.importsOk, v.imports.join());
@@ -112,6 +115,20 @@ export function registerUnifiedFullTests(test, { engine }) {
   test("unified engine, original flash model, USB plugged: the same display, audio, clock, flash, USB descriptor and USB-store flag as the shipped engine (4 firmware, 2 s each, interpreter)", async () => {
     const u = await U();
     for (const id of FIRMWARE) sameObs(obsOf(engine, id), obsOf(u, id), id);
+  });
+
+  test("unified engine, PLL0 boot state (Component 8 Stage 4): the four firmware upstream named start their audio on it and not on the shipped engine; unaffected firmware are unchanged", async () => {
+    const u = await U();
+    for (const id of ["amb", "ctl", "choppah", "polly"]) {
+      const a = obsOf(engine, id, { seconds: 1 }), b = obsOf(u, id, { seconds: 1 });
+      assert.ok(a.rows[0].emulatedMs > 5000, `${id}: the shipped engine fast-forwards (no audio frames): ${a.rows[0].emulatedMs} ms in 1 s`);
+      assert.ok(b.rows[0].emulatedMs < 2000, `${id}: the unified engine's clock follows the audio: ${b.rows[0].emulatedMs} ms in 1 s`);
+    }
+    for (const id of ["amb", "mutable", "sidou"]) {
+      assert.equal(obsOf(engine, id, { seconds: 1 }).rows[0].audioRms, 0, `${id} is silent on the shipped engine`);
+      assert.ok(obsOf(u, id, { seconds: 1 }).rows[0].audioRms > 0.001, `${id} is audible on the unified engine`);
+    }
+    sameObs(obsOf(engine, "felucca", { seconds: 1 }), obsOf(u, "felucca", { seconds: 1 }), "felucca does not read PLL0");
   });
 
   test("unified engine, original flash model, JIT on: the same as the shipped engine (2 firmware, 2 s each)", async () => {
