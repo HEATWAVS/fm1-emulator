@@ -16,7 +16,7 @@ engine build is now Stage 4B, fault injection is Component 5, scenario tests 6, 
 |---|---|---|---|
 | 1 | Headless machine harness (`ci/machine/`) | **Done**, commit `5791302` | |
 | 2 | **Selectable flash ID** (old `85 60 14` / new `B3 60 14`) by validated runtime patch, harness only | **Done**, commit `9f6c78f` | |
-| 3 | **Machine self-test in the test workflow:** quick tier in `npm test` (20 s hard limit), full tier as `npm run test:machine` | **Done**, commit `69afefa` | Full tier in CI deferred until validated on macOS/Linux (see below) |
+| 3 | **Machine self-test in the test workflow:** quick tier in `npm test` (30 s hard limit since Stage 6, D102; 20 s before), full tier as `npm run test:machine` | **Done**, commit `69afefa` | Full tier in CI deferred until validated on macOS/Linux (see below) |
 | 4 | **Realistic flash-chip behaviour** (busy/timing, WEL, page-program rules, erases, status registers, protection, Puya vs UC25HQ80). Staged: | | |
 | 4A | JS **reference model + conformance tests** from the two datasheets (`chipspec.mjs`, `chipmodel.mjs`, `chiptests.mjs`, `FLASH-CHIPS.md`); typical timing default, maximum as stress profile, caller-supplied clock; refuses to guess | **Done**, commit `be69973` | |
 | 4B | Isolated build of the upstream Rust engine (v0.3.0, commit `631b790`) beside `fm1_web.wasm`, parity-checked against it | **Done** (scratch, outside the repo): the build is now reproducible by `ci/engine/build.mjs`; parity result in TESTING.md | |

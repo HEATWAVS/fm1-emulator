@@ -60,7 +60,7 @@ Not used on the shipped engine: all-zero flash and `zero:0x4000` on `frasil`/`mo
 
 | Tier | Runs | Needs |
 |---|---|---|
-| Quick (`npm test`, 20 s hard limit) | catalogue checks, verdict truth table, damage-state logic, fixture = survey subset and agrees with the catalogue, 3 corrupted-flash scenarios, idle reset, reset control (10 tests, about 4 s) | shipped engine only |
+| Quick (`npm test`, 30 s hard limit) | catalogue checks, verdict truth table, damage-state logic, fixture = survey subset and agrees with the catalogue, 3 corrupted-flash scenarios, idle reset, reset control (10 tests, about 4 s) | shipped engine only |
 | Full | the other 7 corrupted-flash scenarios, determinism, window dependence | shipped engine only |
 | Full, chip engine | 9 interrupted-cycle scenarios + the `powerCycle()` limitation (10 tests) | the built chip-profile engine; **SKIPPED, never passed, without it** |
 

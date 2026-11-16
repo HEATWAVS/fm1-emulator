@@ -225,7 +225,8 @@ for (const f of ["chipmode.js", "chipcompare.js", "chiptest.js", "chipcompare-wo
 // Headless machine harness, quick tier (ci/machine/selftest.mjs --quick): boots real firmware on the
 // emulated CPU and checks the flash and flash-ID safety logic. Hard limit so a stuck emulation can never
 // hang `npm test`. The full tier (about 90 s) is `npm run test:machine`, deliberately not run here.
-const MACHINE_QUICK_LIMIT_MS = 20_000;
+// 30 s since Component 8 Stage 6 (D102): the quick tier takes 16.8 to 21.3 s depending on background load, so 20 s failed on a busy machine; still a hard stop for a hung run.
+const MACHINE_QUICK_LIMIT_MS = 30_000;
 const machineQuick = spawnSync(process.execPath, [resolve(root, "ci/machine/selftest.mjs"), "--quick"],
   { encoding: "utf8", timeout: MACHINE_QUICK_LIMIT_MS, killSignal: "SIGKILL" });
 assert.notEqual(machineQuick.error?.code, "ETIMEDOUT",
