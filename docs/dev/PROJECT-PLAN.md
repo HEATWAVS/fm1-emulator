@@ -57,4 +57,7 @@ compared, problems reported in a copyable report, with the original application 
 | 3 | Rebase investigation onto v0.4.0 / v0.5.1 / HEAD (scratch only): feasible but changes behaviour for 22 of 277 packages, breaks the JIT host interface; **decision: do not rebase now** (D94) | **Done** (scratch, reported) |
 | 4 | **PLL0 boot state** (upstream `d2bcc33`) added to the unified engine only: 15 packages start their audio | **Done** (D100); unified engine now `ba1ba889…` |
 
+| 5 | PLL0 firmware behaviour with input and UI review (scratch only): 9 of the 12 play under some input on the unified engine, none on Default; the PLL0 note was only in the report | **Done** (scratch, reported) |
+| 6 | **PLL0 clarification in the application**: hash-matched panel notice and report note, plain-language wording, four-row scoped comparison with an audio-engine-start result, drift guard | **Done** (D101) |
+
 Not in Stage 2 (not approved, not done): replacing the pinned chip engine by the unified one in the tests (D96), a rebase onto a newer upstream, an in-app fault-injection control, an in-app flash-ID or unique-ID control, the SMK-37 board in chip modes, any hardware-accuracy claim.
