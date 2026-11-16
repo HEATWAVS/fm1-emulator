@@ -2,9 +2,11 @@
 
 ## How to run
 ```bash
-npm test                              # existing suite + machine quick tier (ci/verify.mjs), ~13 s
-npm run test:machine:quick            # machine quick tier alone, 172 tests, ~12 s
-npm run test:machine                  # machine full tier, 278 tests (149 harness + 129 chip-model), ~90 s, ~240 s with the chip engine (not run by npm test or CI)
+npm test                              # existing suite + chip mode unit tests + machine quick tier (ci/verify.mjs), ~27 s
+npm run test:machine:quick            # machine quick tier alone, 210 tests, ~18 s (limit 20 s in npm test)
+npm run test:machine                  # machine full tier, 374 tests, ~735 s with the chip engine (not run by npm test or CI)
+node ci/chip-mode-tests.mjs [--full]  # the application's chip test modes: 9 pure/source-shape tests in 0.1 s; --full adds 4 tests on the real engines (~30 s)
+node ci/engine/build.mjs --upstream <full clone> --unified   # also builds and verifies the unified engine (needs commit 9acb2df in the clone)
 node ci/machine/selftest.mjs --filter "chip live"   # only the 51 live chip conformance tests (needs the chip engine), ~9 s
 node ci/engine/build.mjs --upstream <clone of fm1-emu> --test   # build the chip-profile test engine and run its Rust tests (see ci/engine/README.md)
 node ci/machine/chiptests.mjs         # the 129 flash-chip reference-model tests alone, ~0.3 s
@@ -155,3 +157,21 @@ Details: BOOT-AREA.md, BOOT-AREA-SCENARIOS.md. **Engine, Rust, patch, pin, shipp
 **Mutation controls (7C suite):** **79 of 79 caught** (identity guard and pins, catalogue and inheritance, damage resolution, row builder and summariser, expectation checks, live cycle commands and recorded windows, report hash and serialisation, summary rendering, CLI exit codes and options, committed data edits). The first run caught 57 of 80 real mutants: the rest were stale patterns (CRLF handling in my scratch script), CLI mutants run in the wrong tier, and gaps closed with tests (`buildRows` and `checkLive` rejections, the machine guard on live rows, a watch window not tied to its recorded value); one redundant runtime check (the catalogue's own sha256 beside the pinned digest) was removed and tested instead. A real defect was also found by the new tests before any mutation run: the first reference-verification cache was keyed by the image only and accepted a verified Felucca image as another firmware's reference (D92). **7B suite re-run:** 87/88 caught, the one survivor being the known equivalent (`touched` via `changedKnown`); no 7B source changed.
 **Live results pinned after computing and reviewing them** (chip-profile engine, Puya typical timing, cut at 50 %): erase4k at 0x3000 (old / ff), erase32k at 0x0 (ff), erase64k at 0xF0000 (ff), 256-byte program at 0x3F00 (new), chip erase (ff), erase4k at 0x4000 (ff), and the chip divergence; all reproduce the committed rows exactly.
 **Not covered:** hardware behaviour of every kind; the SPL and mask ROM; recovery; firmware other than the six representatives (the other 271 packages are covered by the 7B intact-image test); the cut fraction (always 50 %).
+
+## Component 8, Stage 2: unified engine in the application (2026-11-16, Windows 11, Node 24.19.0, rustc 1.97.1)
+
+**Scratch rebuild gate (before any repository change).** Stage 1 source + `usb.rs` replaced by upstream `9acb2df`'s (the script proved exactly one differing line, 36, SPDX): same flags as Stage 1, build OK, **sha256 `58bacde65163d8de17296c36a0da365a5c3e94a2616ba99e4b59bb5b61be3d30`, 2,746,487 bytes: identical to the Stage 1 binary**. Rust workspace tests on that source: 61 + 7 + 95 + 2 + 9 passed, 0 failed, 2 ignored (174 / 0 / 2). Then through the repository's own pipeline (`ci/engine/build.mjs --unified --upstream <full clone> --out <scratch>`): the chip engine `28dacdb4…764e` and the unified engine `58bacde6…3d30` were both reproduced.
+
+**Automated, committed.**
+| Tier | Tests | Result |
+|---|---|---|
+| `npm test` (ci/verify.mjs incl. `chip-mode-tests.mjs` quick, 9 tests, and the machine quick tier) | | PASS (27 s) |
+| Machine quick tier (`--quick`) | 210 tests, 4 new: unified pin, committed binary identity, shipped engine untouched, notices and root LICENSE | 210/210 pass |
+| Machine full tier | 374 tests: 374/374 pass, 0 failed, 0 SKIPPED (chip engine present, 734.5 s) | see below |
+| New full-tier tests (`unifiedtests.mjs`, 8) | capabilities; unified (original flash model, USB on) == shipped on 4 firmware x 2 s (display, audio, clock, flash, USB descriptor, USB-store flag); JIT on == shipped on 2 firmware; audio-in queue traces (zp12 drains, melodee stalls at 147,192, optimist none; 121 points each) == shipped; XIP-tail switch (mode 0 = shipped on dx747, mode 1 differs); a chip profile selected on the unified engine takes effect; application chip test modes on the real engines (13 tests); unified == pinned chip engine under both profiles (2 firmware, SKIPPED without the chip engine) | PASS |
+
+**Browser verification (the built-in browser pane, the real page served from `site/`; not automated, not repeatable by CI).**
+Passed: the panel renders (orange border in a test mode); no console errors from the new modules (three 404s pre-exist: `smk37/firmwares.json`, `boot-health.json` x2); Default: Felucca and quadro-fm1 and zp12 boot and run, status line and "Saved in this browser" as before; switching to Puya and UC25HQ80 reboots the firmware on the unified engine ("Test mode: nothing is saved", engine hash in the report is `58bacde6…`); the saved IndexedDB records were identical before, during and after a Puya session of quadro-fm1 (which writes its settings at 0xD6000) and after returning to Default; Copy report (a real click: "Report copied"; a script-synthesised click is refused by the browser, and the report is then shown in the panel for manual copying); Compare chips on Felucca (no difference in 3 s) and on quadro-fm1: **flash writes at 0xD6000 on the original engine and the Puya profile, none on the UC25HQ80 profile**, with the JEDEC inference labelled (matches the Component 4 finding); USB audio in is detected for zp12 in Default and in a test mode.
+**Untested:** the SMK-37 board error path in a chip mode (no SMK-37 package is bundled in this build); the Electron packaged app (only the page in a browser was run); a second browser or OS; Copy report under file:// / fm1://app permissions; long sessions in a test mode (the audio worker ran about 15 s per check); the in-app comparison with JIT (it uses the interpreter); any firmware outside the ones named.
+
+**Known limitations (honest).** The machine quick tier measured 17.4 to 19.7 s across this session (about 16.1 s on the day Stage 7C was measured; system load varies) against the 20 s hard limit of `npm test`: the margin is thin and was thin before Stage 2. Stage 2's four quick tests take about 20 ms in total and the application tests are 0.1 s, so Stage 2 is not the cause; if `npm test` ever hits the limit, move rows to the full tier as D93 did. The page's comparison feeds no key presses, so firmware that stay silent without input (Felucca) show silent audio in every configuration. Audio-in content conversion remains unverified (queue behaviour only). The unified engine's hash is verified for one toolchain. None of this is hardware evidence.

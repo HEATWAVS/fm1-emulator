@@ -471,3 +471,7 @@ identical to the first run, the 72 trapping rows now ordinary results, 190 of 19
 **Limitations (see FAULT-SURVEY.md for the full list).** Fixed matrix, not exhaustive; 8 s input script; typical timing only; two chip profiles; the legacy model cannot be interrupted; harness-issued cycles run with the CPU stopped and write a
 labelled test input (0x00); no firmware-issued block or chip erase exists in the window; outcome policies beyond `old`/`new`/`ff` are exercised at one interruption point; the boot area, USB, the update loader and the maximum-timing profile are
 not covered; and no result is a prediction of the physical chip.
+
+## Component 8 Stage 2 note: fault injection in the application (2026-11-16)
+
+The unified engine (`fm1_web_unified.wasm`) contains the whole fault-injection engine of this document (it is the pinned chip-profile engine plus additions: its 82 exports are the chip engine's 73, fault exports included, plus 9), and its chip behaviour matches the pinned chip engine under both profiles in the compared runs. **The application does not expose fault injection**: no power-cut control, no journal, no outcome policy in the UI, and the in-app comparison never cuts power. Fault injection remains a harness / CLI capability (`ci/machine`), run against the pinned chip engine. Exposing it in the application would be a separate, approved stage.

@@ -33,3 +33,8 @@ Work efficiently without compromising engineering quality.
   appropriate. They live in `docs/dev/`.
 - Preserve important technical findings there so future sessions can continue without repeating
   research.
+
+## Engines and chip test modes (Component 8)
+- The shipped `site/emulator/fm1_web.wasm` is the application's Default engine and is never rebuilt or replaced here. The unified engine `site/emulator/fm1_web_unified.wasm` runs the chip test modes only; it is built by `ci/engine/build.mjs --unified` from pinned sources (`ci/engine/pin.json`) and its hash is pinned by a quick-tier test. Provenance and licence notes: `docs/dev/ARCHITECTURE.md`, `DECISIONS.md` D94-D99.
+- Chip test sessions never touch saved patches (ephemeral). Never claim a chip profile matches a physical chip: both are datasheet-based reference profiles.
+- Never access the separate FM1 Firmware project. Never push.
