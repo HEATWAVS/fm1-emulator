@@ -192,6 +192,7 @@ h1.deck-brand { display: flex; align-items: center; gap: 8px; }
 .chip-box p { margin: 6px 0; font-size: 12px; line-height: 1.4; }
 .chip-box #chip-status { display: block; font-size: 12px; min-height: 1.2em; }
 .chip-box #chip-status[data-error="true"] { color: var(--bad, #c0392b); }
+.chip-box .chip-notice { padding: 6px 8px; border-left: 3px solid var(--accent, #d68a00); background: var(--well); border-radius: 0 6px 6px 0; }
 .chip-box pre { max-height: 260px; overflow: auto; font-size: 11px; line-height: 1.35; white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; padding: 8px; background: var(--well); border-radius: 8px; }
 body[data-chip-mode]:not([data-chip-mode="default"]) .chip-box { border-color: var(--accent, #d68a00); }
 

@@ -1,0 +1,130 @@
+{
+  "note": "Bundled packages whose audio engine starts on the unified engine (PLL0 boot state, upstream fm1-emu d2bcc33) and never starts on the shipped Default engine. Matched by package SHA-256 only, never by name. Evidence-based like ci/boot-quarantine.json: verify or regenerate with node ci/pll0-audit.mjs --check / --write. Starting the audio engine is not the same as producing audible sound.",
+  "audited": "2026-11-16",
+  "unifiedEngineSha256": "ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b",
+  "measure": "frames fm1_render reports as real audio, summed over 690 renders of 128 frames (88320 requested, 2 s of audio time); interpreter, USB plugged, original flash model, 100 MHz; shippedRealFrames and unifiedRealFrames are those sums",
+  "packagesAudited": 277,
+  "requestedFrames": 88320,
+  "entries": [
+    {
+      "id": "amb",
+      "name": "AMB-1",
+      "version": "1.3.2",
+      "sha256": "a949a6a2a1ced8b3857d156ad0409a55e6ba53bbdd4094d0a38f2779364064f3",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "amenity",
+      "name": "Amenity",
+      "version": "2.0.0",
+      "sha256": "f76af4b2f278b561bf6f3b10d0db0f6b219bfb564dad3c872b90ec656cbbb506",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "assid",
+      "name": "ASS-ID",
+      "version": "1.0",
+      "sha256": "f869992c2d387301ffc1d099fffe733096ed134e10bbb8d59a642e52997a3ba4",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87424
+    },
+    {
+      "id": "atek303",
+      "name": "ATEK303",
+      "version": "1.2",
+      "sha256": "d7fe6293e45fa003c82c7017886e172f53bd64190100282a82e778f21faded6e",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "choppah",
+      "name": "CHOPPAH",
+      "version": "1.2",
+      "sha256": "cffdcd139f887a7ccfeb037b7793a7c01ce7b76dc0d9fe8e5038add9a1b1a10f",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87296
+    },
+    {
+      "id": "ctl",
+      "name": "CTL-1",
+      "version": "1.0.3",
+      "sha256": "1ecf7e3c2af255c7f404fa6232e9a55cdbaaf3e60cc1c549e14ecd310f7d5104",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "fm1-ripple",
+      "name": "fm1-ripple",
+      "version": "0.6.1",
+      "sha256": "67de036c7ac9969c19db8c5e1a230c460b750950df6c8ae61bb96fd65ab94c4f",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87424
+    },
+    {
+      "id": "fmfam",
+      "name": "FM-FAM",
+      "version": "0.2.9",
+      "sha256": "367e1bbee91bf8195bb8192528ec9927be44254059ae363813385297cc4a5b1d",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 86656
+    },
+    {
+      "id": "krisjangle",
+      "name": "Kris Jangle",
+      "version": "0.9",
+      "sha256": "935aec486f4fdcd18ca55b43188983480612e34bfab4f3069bbadc08404fe495",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "loom",
+      "name": "LOOM-8",
+      "version": "0.14",
+      "sha256": "362d04a31e75a3acacebf58f1c39faead5b98d3ee3c76f18d3b82495703f0d2c",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87296
+    },
+    {
+      "id": "midimon",
+      "name": "MIDIMON",
+      "version": "0.5",
+      "sha256": "8d13651e14a84a68107832de5d5fa569fa1b645a051745d8f6aed9356c254159",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "mutable",
+      "name": "Mutable Dreams",
+      "version": "1.5",
+      "sha256": "ee5d410fc13b9861baa2336303821ccf66ec8c7143c167649886fad368198b52",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "polly",
+      "name": "Polly",
+      "version": "0.6.2",
+      "sha256": "77dce089612e1d68a35ee6d2374d5d0612a667952b8f2ef632a6c27fb7235d56",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "remotefm1",
+      "name": "RemoteFM1",
+      "version": "0.3.6",
+      "sha256": "5c712b1402a31a33b2c3227f771a5603a0facf8162933e699c5d29f1c762017e",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 87552
+    },
+    {
+      "id": "sidou",
+      "name": "SIDOU",
+      "version": "1.9.0",
+      "sha256": "f88bbead3178fcd3894a67f45d262d2009c812eb32e87ed3474711887390d445",
+      "shippedRealFrames": 0,
+      "unifiedRealFrames": 88320
+    }
+  ]
+}

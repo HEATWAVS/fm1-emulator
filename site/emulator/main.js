@@ -4,8 +4,8 @@
 // in the wasm: a catalog entry's fetched from its author's site, or one opened from this
 // computer (M-VAVE's own: their server does not let other pages fetch it).
 import { fetchPackage } from "./fwsc.js";
-import { ENGINE_FILES } from "./chipmode.js?v=1";
-import { initChipTest } from "./chiptest.js?v=1";
+import { ENGINE_FILES } from "./chipmode.js?v=2";
+import { initChipTest } from "./chiptest.js?v=2";
 import { SaveStore, packageHash, changedSectors, packSectors, exportSave, importSave } from "./persistence.js";
 import "./catalog-source.js";
 import { judgeSecond, recovered } from "./perf-judge.js?v=3";
@@ -1599,7 +1599,7 @@ async function startAudio() {
       node.port.onmessage = (e) => { if (e.data?.type === "stream") stream = e.data; };
       engine = worker;
     } else {
-      await ac.audioWorklet.addModule("worklet.js?v=31");
+      await ac.audioWorklet.addModule("worklet.js?v=32");
       node = new AudioWorkletNode(ac, "fm1", { numberOfInputs: 0, outputChannelCount: [2] });
       engine = node.port;
     }

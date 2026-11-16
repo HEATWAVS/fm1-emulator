@@ -2,7 +2,7 @@
 // worker (chipcompare-worker.js) and the Node tests (ci/chip-mode-tests.mjs) both use it. It touches no storage and no audio device: each configuration is a fresh
 // machine run for a fixed amount of emulated time with NO key presses, on the interpreter (the deterministic reference), USB plugged.
 import { applyPackageResources } from "./package-resources.js?v=1";
-import { applyChipProfile, chipStatus, compareRuns, comparePair } from "./chipmode.js?v=1";
+import { applyChipProfile, chipStatus, compareScoped } from "./chipmode.js?v=2";
 
 const SAMPLE_RATE = 44100, QUANTUM = 128, FLASH_LEN = 1 << 20, SECTOR = 4096;
 const hashU16 = (a) => { let h = 0x811c9dc5; for (let i = 0; i < a.length; i++) { h ^= a[i]; h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, "0"); };
@@ -35,10 +35,10 @@ export async function runConfig({ module, pkg, mhz = 100, chip = null, timing = 
   const applied = applyChipProfile(x, chip, timing);
   const base = new Uint8Array(x.memory.buffer, x.fm1_flash_base(), x.fm1_flash_len()).slice();
   const quanta = Math.ceil((seconds * SAMPLE_RATE) / QUANTUM), step = Math.round(SAMPLE_RATE * 0.05 / QUANTUM);   // look at the screen every 50 ms
-  let sumSq = 0, n = 0, peak = 0, firstFrameMs = null, wipSeen = x.fm1_flash_wip ? false : null;
+  let sumSq = 0, n = 0, peak = 0, firstFrameMs = null, wipSeen = x.fm1_flash_wip ? false : null, realFrames = 0;
   for (let i = 0; i < quanta; i++) {
     if (x.fm1_halted()) break;
-    x.fm1_render(QUANTUM, 4_000_000);
+    realFrames += x.fm1_render(QUANTUM, 4_000_000);          // the frames that are real audio (the firmware's I2S DMA delivered them): the audio engine's start, whatever the loudness
     const l = new Float32Array(x.memory.buffer, x.fm1_out_l(), QUANTUM);
     for (let k = 0; k < QUANTUM; k++) { const v = l[k]; sumSq += v * v; if (Math.abs(v) > peak) peak = Math.abs(v); }
     n += QUANTUM;
@@ -49,6 +49,7 @@ export async function runConfig({ module, pkg, mhz = 100, chip = null, timing = 
   const flash = new Uint8Array(x.memory.buffer, x.fm1_flash(), x.fm1_flash_len());
   const list = changedSectorList(base, flash), st = chipStatus(x);
   return {
+    audioFrames: realFrames, audioRequested: n, audioStarted: realFrames > 0,
     chip: applied, emulatedMs: st.ms, halted: st.halted === true, firstFrameMs, audioRms: n ? Math.sqrt(sumSq / n) : 0, audioPeak: peak,
     lcdHash: hashU16(lcd), lcdColours: coloursOf(lcd), changedSectors: list.length, changedList: list, wipSeen,
     unspecified: st.unspecified, notModeled: st.notModeled, lastNotModeled: st.lastNotModeled, uidUnknownReads: st.uidUnknownReads,
@@ -57,12 +58,13 @@ export async function runConfig({ module, pkg, mhz = 100, chip = null, timing = 
 }
 
 /**
- * The comparison: the original engine, then the unified engine under the Puya and the UC25HQ80 profiles. `engines`: { shipped: Module, unified: Module }.
+ * The comparison: the original engine, then the unified engine with the original flash model, then under the Puya and the UC25HQ80 profiles (row 2 separates the engine from the chip: see compareScoped). `engines`: { shipped: Module, unified: Module }.
  * Returns { seconds, rows: [{ label, result | error }], differences: [text] }. A configuration that cannot run is reported, never skipped silently.
  */
 export async function runComparison({ engines, pkg, mhz = 100, seconds = 3, timing = "typical", onProgress = () => {} }) {
   const plan = [
     { label: "Default (original engine)", module: engines.shipped, chip: null },
+    { label: "Original flash model on the unified engine", module: engines.unified, chip: null },
     { label: "Older FM-1 flash: Puya P25Q80H profile", module: engines.unified, chip: "puya" },
     { label: "Newer FM-1 flash: UC25HQ80 profile", module: engines.unified, chip: "uc25hq80" },
   ];
@@ -72,8 +74,6 @@ export async function runComparison({ engines, pkg, mhz = 100, seconds = 3, timi
     try { rows.push({ label: c.label, result: await runConfig({ module: c.module, pkg, mhz, chip: c.chip, timing, seconds }) }); }
     catch (error) { rows.push({ label: c.label, error: String(error?.message ?? error) }); }
   }
-  const differences = compareRuns(rows);
-  const puya = rows[1], uc = rows[2];
-  if (puya.result && uc.result) differences.push(...comparePair(puya, uc, true));
+  const differences = compareScoped({ def: rows[0], original: rows[1], puya: rows[2], uc: rows[3] });
   return { seconds, timing, rows, differences };
 }

@@ -1,8 +1,8 @@
 // The "Flash chip test" panel (Component 8, Stage 2): the emulation mode select, the copyable diagnostic report and the comparison of the original engine with the
 // two flash-chip profiles. The pure parts (modes, report text, comparison) are chipmode.js and chipcompare.js; this file is the page wiring and is covered by
 // ci/chip-mode-tests.mjs only as far as a script can (the pure modules, the engine boot path and the saving rules); the buttons themselves were exercised in the browser pane.
-import { MODES, TIMINGS, modeById, modeFromParam, buildReport } from "./chipmode.js?v=1";
-import { changedSectorList } from "./chipcompare.js?v=1";
+import { MODES, TIMINGS, modeById, modeFromParam, buildReport, pll0Entry, panelNotice } from "./chipmode.js?v=2";
+import { changedSectorList } from "./chipcompare.js?v=2";
 
 const COMPARE_SECONDS = 3;
 
@@ -17,24 +17,40 @@ export function initChipTest(ctx) {
   let mode = modeFromParam(ctx.params.get("mode")), timing = TIMINGS.some((t) => t.id === ctx.params.get("chiptiming")) ? ctx.params.get("chiptiming") : "typical";
   let lastPackage = null, comparison = null, request = 0, comparing = false;
   const waiters = new Map();
-  const api = { mode: () => mode, timing: () => timing, notePackage: (p) => { lastPackage = p; comparison = null; }, onWorkletMessage: (m) => {
+  let onPackage = () => {};
+  const api = { mode: () => mode, timing: () => timing, notePackage: (p) => { lastPackage = p; comparison = null; onPackage(); }, onWorkletMessage: (m) => {
     const w = waiters.get(m.request);
     if (w) { waiters.delete(m.request); clearTimeout(w.timer); w.resolve(m); }
   } };
   if (!sel) return api;                                               // a page without the panel (the embedded player) keeps the default
 
-  const timingSel = $("chiptiming"), timingRow = $("chiptiming-row"), note = $("chipnote"), copyBtn = $("chip-copy"), cmpBtn = $("chip-compare"), stat = $("chip-status"),
+  const timingSel = $("chiptiming"), timingRow = $("chiptiming-row"), note = $("chipnote"), notice = $("chip-notice"), copyBtn = $("chip-copy"), cmpBtn = $("chip-compare"), stat = $("chip-status"),
     outWrap = $("chip-report-wrap"), out = $("chip-report");
   for (const m of MODES) sel.add(new Option(m.label, m.id));
   for (const t of TIMINGS) timingSel.add(new Option(t.label, t.id));
   sel.value = mode.id;
   timingSel.value = timing;
+  // The PLL0 list (site/emulator/pll0-firmware.json): the firmware whose audio engine starts on the unified engine and never on Default, matched by package SHA-256 only.
+  let pll0 = null;
+  const hashOfLoaded = () => {
+    const s = ctx.state();
+    return lastPackage && lastPackage.id === s.fw?.id ? lastPackage.hash : s.fw?.sha256 ?? null;      // the booted package's hash; else the catalogue's for the selected firmware
+  };
+  const refreshNotice = () => {
+    const text = panelNotice({ mode, entry: pll0Entry(hashOfLoaded(), pll0) });
+    notice.textContent = text ?? "";
+    notice.hidden = !text;
+  };
   const refresh = () => {
     note.textContent = mode.note;
     timingRow.hidden = !mode.chip;
     document.body.dataset.chipMode = mode.id;
+    refreshNotice();
   };
+  onPackage = refreshNotice;
   refresh();
+  fetch("pll0-firmware.json?v=1").then((r) => (r.ok ? r.json() : null)).then((d) => { pll0 = d; refreshNotice(); }).catch(() => { pll0 = null; });
+  document.addEventListener("fm1-fw-selected", refreshNotice);
   const setStatus = (text, error = false) => { stat.textContent = text; stat.dataset.error = String(error); };
   sel.addEventListener("change", () => {
     mode = modeById(sel.value) ?? mode;
@@ -74,6 +90,7 @@ export function initChipTest(ctx) {
       firmware: { id: lastPackage?.id ?? s.fw?.id, name: lastPackage?.name ?? s.fw?.name, sha256: lastPackage?.hash ?? null },
       run: live ? { mhz: s.mhz, jit: s.jit, board: live.board, status: live.status } : null,
       sectors: sectors ? { count: sectors.length, list: sectors } : null,
+      pll0: pll0Entry(hashOfLoaded(), pll0),
       comparison,
     });
   }
@@ -110,7 +127,7 @@ export function initChipTest(ctx) {
       const pkg = lastPackage && lastPackage.id === s.fw?.id ? lastPackage : { ...(await ctx.packageOf(s.fw)), id: s.fw?.id, name: s.fw?.name };
       const shipped = await ctx.engineBytesFor(modeById("default")), unified = await ctx.engineBytesFor(modeById("puya"));
       const result = await new Promise((resolve, reject) => {
-        const worker = new Worker("chipcompare-worker.js?v=1", { type: "module" });
+        const worker = new Worker("chipcompare-worker.js?v=2", { type: "module" });
         worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || "the comparison worker failed")); };
         worker.onmessage = (e) => {
           const m = e.data;

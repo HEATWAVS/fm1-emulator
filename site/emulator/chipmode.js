@@ -29,6 +29,27 @@ export const TIMING_IDS = { typical: 0, maximum: 1 };
 export const JEDEC = { puya: [0x85, 0x60, 0x14], uc25hq80: [0xb3, 0x60, 0x14] };
 export const DEFAULT_MODE = "default";
 
+// ---- the PLL0 audio-clock difference between the Default and the unified engine (Component 8, Stage 6)
+// site/emulator/pll0-firmware.json lists, by package SHA-256 only, the bundled firmware whose audio engine starts on the unified engine and never on the shipped Default (ci/pll0-audit.mjs checks it).
+/** The package's entry in the PLL0 list, or null. Matched by the package's SHA-256 alone (never by id or name: another version of the same firmware may behave differently). */
+export function pll0Entry(sha256, data) {
+  if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256) || !Array.isArray(data?.entries)) return null;
+  return data.entries.find((e) => e.sha256 === sha256) ?? null;
+}
+export const PLL0_PANEL_NOTICE =
+  "Audio-clock difference: on the test engine this firmware may start its audio, while on Default it stays silent, because the two engines set up the audio clock (PLL0) differently. " +
+  "It may still make no sound until it is played, and not every firmware does. The test engine's PLL0 values come from the upstream emulator and have not been verified on a physical FM-1. " +
+  "To tell the flash chip's effect apart from this, compare against \"Original flash model on the unified engine\" rather than against Default.";
+/** The notice under the mode note: only in a test mode, only for a package whose SHA-256 is on the list. */
+export const panelNotice = ({ mode, entry }) => (mode?.test && entry ? PLL0_PANEL_NOTICE : null);
+export const PLL0_ENGINE_LINE =
+  "  audio clock: this engine starts the audio clock (PLL0) the way the upstream emulator sets it after a bootloader; the Default engine does not. Some firmware only starts its audio that way, " +
+  "so a unified test mode can start audio that Default never starts. The values come from the upstream emulator and have NOT been verified on a physical FM-1.";
+export const pll0FirmwareNote = (entry) =>
+  `  firmware note: ${entry.name}${entry.version ? ` ${entry.version}` : ""} is one of the bundled firmware whose audio engine starts on the unified engine and does not start on Default (it checks the audio clock). ` +
+  "That says nothing about whether it is audible: that depends on the firmware and on how it is played. A difference from Default can come from this engine difference and not only from the flash chip. " +
+  "The PLL0 values behind it have not been verified on a physical FM-1.";
+
 export const modeById = (id) => MODES.find((m) => m.id === id) ?? null;
 /** The mode a `?mode=` value names (case-insensitive; "old" and "new" as the harness's aliases), or the default. */
 export function modeFromParam(value) {
@@ -74,7 +95,8 @@ export function describeRun(r) {
   const out = [];
   out.push(r.halted ? "the emulated CPU HALTED (a CPU fault: the firmware crashed)" : "the emulated CPU kept running");
   if (r.firstFrameMs === null) out.push("no screen content was drawn"); else out.push(`first screen content at about ${r.firstFrameMs} ms`);
-  out.push(`audio: ${r.audioRms > 0.0005 ? "sound was produced" : "silent"} (RMS ${r.audioRms.toFixed(4)}, peak ${r.audioPeak.toFixed(3)})`);
+  if (r.audioStarted !== undefined && r.audioStarted !== null) out.push(`audio engine: ${r.audioStarted ? "started" : "did NOT start"} (${r.audioFrames} real audio frames of ${r.audioRequested} rendered)`);
+  out.push(`audible output: ${r.audioRms > 0.0005 ? "sound was produced" : "silent"} (RMS ${r.audioRms.toFixed(4)}, peak ${r.audioPeak.toFixed(3)})`);
   out.push(`flash: ${r.changedSectors} sector(s) changed from the package's flash${r.changedList.length ? ` (${r.changedList.slice(0, 8).map((a) => hex(a, 5)).join(", ")}${r.changedList.length > 8 ? ", …" : ""})` : ""}`);
   if (r.wipSeen !== null) out.push(`WIP (flash busy) seen: ${yn(r.wipSeen)}`);
   if (r.unspecified !== null) out.push(`chip commands the datasheets leave unspecified (ignored): ${r.unspecified}; opcodes outside the model: ${r.notModeled}${r.notModeled ? ` (last ${hex(r.lastNotModeled)})` : ""}`);
@@ -100,6 +122,7 @@ const DISCLAIMER = [
  *   firmware       { id, name, sha256 }
  *   run            { mhz, jit, status: chipStatus(...), board, ephemeral }
  *   sectors        { count, list[] }   (flash sectors changed from the package's base flash in this session)
+ *   pll0           the firmware's entry in pll0-firmware.json (matched by package SHA-256), or null
  *   comparison     null or { seconds, rows: [{ label, result: <describeRun input>, error? }], differences: [text] }
  */
 export function buildReport(d) {
@@ -117,7 +140,8 @@ export function buildReport(d) {
   push("EMULATION MODE");
   push(`  mode: ${d.mode.label}${d.mode.test ? "  [TEST MODE: nothing is saved]" : ""}`);
   push(`  engine: ${d.engine.file}${d.engine.sha256 ? ` (sha256 ${d.engine.sha256})` : ""}`);
-  if (d.mode.engine === "unified") push("  boot state: PLL0 starts at the values upstream fm1-emu d2bcc33 attributes to a bootloader (read off FM-1s per upstream; not verified here), so firmware that checks it starts its audio here and may not on Default");
+  if (d.mode.engine === "unified") push(PLL0_ENGINE_LINE);
+  if (d.pll0) push(pll0FirmwareNote(d.pll0));
   if (d.mode.chip) push(`  flash chip: ${d.mode.chip === "puya" ? "Puya P25Q80H reference profile" : "UC25HQ80 reference profile"}, JEDEC ${JEDEC[d.mode.chip].map((b) => hex(b)).join(" ")}, ${d.timing ?? "typical"} cycle times`);
   else push(`  flash chip: ${d.mode.test ? "the original instantaneous flash model (no status register, no busy, no protection)" : "the original flash model of the shipped engine"}`);
   if (d.run) {
@@ -141,6 +165,8 @@ export function buildReport(d) {
   }
   if (d.comparison) {
     push(`COMPARISON (same firmware, same inputs, ${d.comparison.seconds} s of emulated time each, interpreter)`);
+    push("  Rows 1 and 2 differ only in the engine; rows 2 to 4 run the same engine and differ only in the flash model. [engine] lines are differences between the two engines (the audio-clock setup included);");
+    push("  [chip] lines are differences between flash models on the same engine. This separates engine behaviour from flash-chip behaviour; it says nothing about how a physical FM-1 behaves.");
     for (const row of d.comparison.rows) {
       push(`  [${row.label}]`);
       if (row.error) push(`    could not run: ${row.error}`);
@@ -155,8 +181,12 @@ export function buildReport(d) {
 }
 
 /** What differs between a reference row and another ({ label, result }), as short statements. `direct`: the two are the profiles being compared with each other, so the per-chip counters are reported for both. */
-export function comparePair(refRow, row, direct = false) {
-  const a = refRow.result, b = row.result, tag = `${row.label} vs ${refRow.label}`, out = [];
+export function comparePair(refRow, row, direct = false, scope = "") {
+  const a = refRow.result, b = row.result, tag = `${scope ? `[${scope}] ` : ""}${row.label} vs ${refRow.label}`, out = [];
+  if (a.audioStarted !== undefined && a.audioStarted !== null && a.audioStarted !== b.audioStarted) {
+    const what = b.audioStarted ? "started here but not in the reference" : "started in the reference but not here";
+    out.push(`${tag}: the audio engine ${what}${scope === "engine" ? " (an engine difference: the flash model is the same in both)" : scope === "chip" ? " (same engine, only the flash model differs)" : ""}`);
+  }
   if (a.halted !== b.halted) out.push(`${tag}: ${b.halted ? "the CPU halted (crashed) here but not in the reference" : "the reference halted (crashed) but this configuration did not"}`);
   if (a.lcdHash !== b.lcdHash) out.push(`${tag}: the screen differs at the end of the run`);
   if ((a.audioRms > 0.0005) !== (b.audioRms > 0.0005)) out.push(`${tag}: ${b.audioRms > 0.0005 ? "sound was produced here but not in the reference" : "silent here but sound in the reference"}`);
@@ -167,16 +197,22 @@ export function comparePair(refRow, row, direct = false) {
   return out;
 }
 
-/** What differs between a run and the first (the reference), for each other one that ran; counters of ignored/unmodelled chip commands are noted for the chip profiles. */
-export function compareRuns(rows) {
-  const ok = rows.filter((r) => r.result);
-  if (ok.length < 2) return [];
+/**
+ * The comparison, in scopes that keep the engine apart from the flash chip. `rows`: { def, original, puya, uc } (each { label, result } or with an error):
+ *   [engine]  the Default engine against the same firmware on the unified engine with the original flash model (nothing about the flash chip changes between them)
+ *   [chip]    each flash profile against the original flash model on the SAME engine, and the two profiles against each other
+ * A profile is never compared with Default: that pair differs in both the engine and the chip, so a difference there could not be attributed.
+ */
+export function compareScoped({ def, original, puya, uc }) {
   const out = [];
-  for (const r of ok.slice(1)) {
-    out.push(...comparePair(ok[0], r));
-    const b = r.result;
-    if (b.unspecified) out.push(`${r.label}: ${b.unspecified} command(s) the datasheets leave unspecified were issued and ignored`);
-    if (b.notModeled) out.push(`${r.label}: ${b.notModeled} opcode(s) outside the model were issued (last ${hex(b.lastNotModeled)})`);
+  if (def?.result && original?.result) out.push(...comparePair(def, original, false, "engine"));
+  for (const p of [puya, uc]) {
+    if (!p?.result) continue;
+    if (original?.result) out.push(...comparePair(original, p, false, "chip"));
+    const b = p.result;
+    if (b.unspecified) out.push(`[chip] ${p.label}: ${b.unspecified} command(s) the datasheets leave unspecified were issued and ignored`);
+    if (b.notModeled) out.push(`[chip] ${p.label}: ${b.notModeled} opcode(s) outside the model were issued (last ${hex(b.lastNotModeled)})`);
   }
+  if (puya?.result && uc?.result) out.push(...comparePair(puya, uc, true, "chip"));
   return out;
 }

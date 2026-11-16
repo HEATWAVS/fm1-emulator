@@ -85,6 +85,18 @@ const sameObs = (a, b, msg) => {
   const drop = (o) => { const c = { ...o }; if (a.usbConf === "-1" || b.usbConf === "-1") { delete c.usbConf; delete c.hasUsr; } return c; };
   assert.deepEqual(drop(projected(b, keys)), drop(projected(a, keys)), msg);
 };
+/** The frames fm1_render reports as real audio over `quanta` renders of 128 frames: the page's own loop, the audio engine's start apart from loudness (ci/pll0-audit.mjs measures the same). */
+const realFrames = (engine, id, quanta) => {
+  const pkg = catalogPackage(id), x = engine.instantiate();
+  x.fm1_jit(0, 16); x.fm1_ahead?.(1024);
+  const p = x.fm1_alloc(pkg.length); new Uint8Array(x.memory.buffer, p, pkg.length).set(pkg);
+  assert.equal(x.fm1_boot_fwsc(p, pkg.length, 0, 0, 100), 0, id);
+  engine.applyPackageResources(x, pkg.buffer.slice(pkg.byteOffset, pkg.byteOffset + pkg.byteLength));
+  x.fm1_usb_plug?.();
+  let real = 0;
+  for (let i = 0; i < quanta; i++) { if (x.fm1_halted()) break; real += x.fm1_render(128, 4_000_000); }
+  return real;
+};
 const feed = (x, frames, v) => {
   const s = new Float32Array(2 * frames).fill(v);
   for (let off = 0; off < s.length; off += 8192) { const n = Math.min(8192, s.length - off); new Float32Array(x.memory.buffer, x.fm1_audio_in_buf(), 8192).set(s.subarray(off, off + n), 0); x.fm1_audio_in(n >> 1); }
@@ -131,6 +143,23 @@ export function registerUnifiedFullTests(test, { engine }) {
     sameObs(obsOf(engine, "felucca", { seconds: 1 }), obsOf(u, "felucca", { seconds: 1 }), "felucca does not read PLL0");
   });
 
+  test("PLL0 list drift guard (site/emulator/pll0-firmware.json): the unified engine still delivers exactly the recorded audio frames for each of the 15 listed packages, and unlisted packages still start identically on both engines", async () => {
+    const u = await U(), data = JSON.parse(readFileSync(resolve(EMULATOR_DIR, "pll0-firmware.json"), "utf8")), quanta = Math.ceil(data.requestedFrames / 128);
+    const catalogue = JSON.parse(readFileSync(resolve(EMULATOR_DIR, "firmwares.json"), "utf8")).firmwares;
+    assert.equal(data.unifiedEngineSha256, sha(readFileSync(UNIFIED_WASM)), "the list belongs to this engine build");
+    assert.equal(sha(readFileSync(resolve(EMULATOR_DIR, "fm1_web.wasm"))), SHIPPED_WASM_SHA256, "the shipped engine is the one the list's zero-frame side was measured on");
+    for (const e of data.entries) {
+      assert.equal(sha(readFileSync(resolve(EMULATOR_DIR, catalogue.find((f) => f.id === e.id).package))), e.sha256, `${e.id}: the package is the one listed`);
+      assert.equal(realFrames(u, e.id, quanta), e.unifiedRealFrames, `${e.id}: real audio frames on the unified engine`);
+    }
+    for (const id of ["felucca", "quadro-fm1", "zp12", "picovave"]) {
+      assert.ok(!data.entries.some((e) => e.id === id), id);
+      const a = realFrames(engine, id, 344), b = realFrames(u, id, 344);
+      assert.ok(a > 0, `${id} starts its audio engine`);
+      assert.equal(b, a, `${id}: the same real frames on both engines`);
+    }
+  });
+
   test("unified engine, original flash model, JIT on: the same as the shipped engine (2 firmware, 2 s each)", async () => {
     const u = await U();
     for (const id of ["felucca", "picovave"]) sameObs(obsOf(engine, id, { seconds: 2, jit: true }), obsOf(u, id, { seconds: 2, jit: true }), id);
@@ -172,7 +201,7 @@ export function registerUnifiedAppTests(test) {
   test("application chip test modes (ci/chip-mode-tests.mjs --full): the page's own comparison code on the real shipped and unified engines, the saving rules, the report", () => {
     const r = spawnSync(process.execPath, [resolve(ROOT, "ci/chip-mode-tests.mjs"), "--full"], { encoding: "utf8", timeout: 300_000 });
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-    assert.match(r.stdout, /PASS: 13 chip mode tests \(full\)/);
+    assert.match(r.stdout, /PASS: 18 chip mode tests \(full\)/);
   });
 }
 
