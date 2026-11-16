@@ -189,6 +189,12 @@ h1.deck-brand { display: flex; align-items: center; gap: 8px; }
 .box > label { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
 .box > label select { min-width: 0; max-width: 62%; }
 .box .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.chip-box p { margin: 6px 0; font-size: 12px; line-height: 1.4; }
+.chip-box #chip-status { display: block; font-size: 12px; min-height: 1.2em; }
+.chip-box #chip-status[data-error="true"] { color: var(--bad, #c0392b); }
+.chip-box pre { max-height: 260px; overflow: auto; font-size: 11px; line-height: 1.35; white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; padding: 8px; background: var(--well); border-radius: 8px; }
+body[data-chip-mode]:not([data-chip-mode="default"]) .chip-box { border-color: var(--accent, #d68a00); }
+
 .sel { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 62%; }
 .sel select { max-width: 100%; }
 #about { margin: 0; color: var(--text); font-size: 13px; overflow-wrap: anywhere;

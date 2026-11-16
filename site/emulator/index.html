@@ -57,6 +57,19 @@
           <span id="bankname" class="dim"></span>
         </div>
       </section>
+      <section class="box chip-box" aria-labelledby="h-chip">
+        <h2 class="eyebrow" id="h-chip">Flash chip test</h2>
+        <label>Emulation <select id="chipmode" aria-label="Emulation mode"></select></label>
+        <label id="chiptiming-row" hidden>Chip timing <select id="chiptiming" aria-label="Flash chip cycle times"></select></label>
+        <p id="chipnote" class="dim"></p>
+        <div class="row">
+          <button type="button" id="chip-copy" title="Copy a plain-text report of this session: the firmware, the engine and flash chip mode, the chip's counters and flash changes, and the last comparison">Copy report</button>
+          <button type="button" id="chip-compare" title="Run this firmware for a few seconds on the original engine and on both flash chip profiles and list what differs">Compare chips…</button>
+        </div>
+        <span id="chip-status" role="status" aria-live="polite" class="dim"></span>
+        <details id="chip-report-wrap" hidden open><summary>Report</summary><pre id="chip-report" tabindex="0"></pre></details>
+        <p class="dim chip-fine">Reference profiles built from the chips' datasheets. Not confirmed to match a physical FM-1's chip; a report is emulator output, not a hardware measurement.</p>
+      </section>
       <section class="box update-box" aria-labelledby="h-radar">
         <div class="update-heading">
           <span class="update-radar" aria-hidden="true"><i></i></span>

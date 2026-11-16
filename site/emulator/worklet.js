@@ -1,4 +1,5 @@
 import { applyPackageResources } from './package-resources.js?v=1';
+import { applyChipProfile, chipStatus } from './chipmode.js?v=1';
 // The emulator in the audio thread: each 128-frame quantum runs the machine until its I2S
 // DMA has produced 128 frames, so the audio device paces the emulation; and also, for an even
 // amount of work per quantum, its share of emulated time while the queue holds less than one
@@ -84,6 +85,7 @@ class Fm1 extends AudioWorkletProcessor {
           this.flushSnapshots();
         } else if (m.type === "cancel-snapshot") this.snapshots = this.snapshots.filter(r => r.request !== m.request);
         else if (m.type === "resume") this.paused = false;
+        else if (m.type === "chip-status") this.port.postMessage({ type: "chip-status", request: m.request, seq: this.seq, status: chipStatus(this.x), board: this.board, chip: this.chip ?? null });
         else if (m.type === "key") this.x.fm1_key(m.id, m.down ? 1 : 0);
         else if (m.type === "enc") this.x.fm1_enc(m.enc, m.clicks);
         else if (m.type === "pot") this.x.fm1_pot(m.value);
@@ -109,7 +111,9 @@ class Fm1 extends AudioWorkletProcessor {
     // the module arrives as bytes: a compiled WebAssembly.Module does not cross into the
     // AudioWorklet's scope (Chrome delivers it as a messageerror). Compiled once, here: on a
     // phone compiling it again on every firmware change takes a noticeable while
-    if (!this.module) this.module = await WebAssembly.compile(m.wasm);
+    // (compiled once per engine: the page boots the shipped engine or the unified one (m.engineId), and a firmware change keeps whichever it asked for)
+    const engineId = m.engineId || "shipped";
+    if (!this.module || this.moduleId !== engineId) { this.module = await WebAssembly.compile(m.wasm); this.moduleId = engineId; }
     let x;
     this.jit = { regions: 0, failed: 0, error: "", bytes: 0, tableSlots: 0, compileMs: 0, compileMaxMs: 0 };
     x = (await WebAssembly.instantiate(this.module, { env: jitImports(() => x, this.jit) })).exports;
@@ -140,6 +144,12 @@ class Fm1 extends AudioWorkletProcessor {
     }
     x.fm1_usb_plug?.();                  // connect a virtual USB host: enumerates USB-MIDI and,
                                         // on samplers (zp12/pigeon…), the USB audio they record from
+    // a flash chip test mode (m.chip: "puya" or "uc25hq80"; unified engine only): the chip model, before the first instruction, after any flash restore
+    let chipInfo = null;
+    if (m.chip) {
+      if (x.fm1_board() !== 0) throw new Error("flash chip test modes are for the FM-1 board; use Default for this firmware");
+      chipInfo = applyChipProfile(x, m.chip, m.chipTiming || "typical");
+    }
     this.x = x;                         // (a reboot replaces the whole instance)
     this.mhz = m.mhz;
     this.ahead = ahead;
@@ -165,7 +175,8 @@ class Fm1 extends AudioWorkletProcessor {
     this.flashChangedAt = this.lastSnapshot = now();
     const base = new Uint8Array(x.memory.buffer, x.fm1_flash_base(), x.fm1_flash_len()).slice();
     const flash = new Uint8Array(x.memory.buffer, x.fm1_flash(), x.fm1_flash_len()).slice();
-    this.port.postMessage({ type: "booted", seq: m.seq, board: this.board, revision: this.flashRevision, base, flash }, [base.buffer, flash.buffer]);
+    this.chip = chipInfo;
+    this.port.postMessage({ type: "booted", seq: m.seq, board: this.board, revision: this.flashRevision, base, flash, chip: chipInfo, engineId }, [base.buffer, flash.buffer]);
   }
 
   observeFlash() {

@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { Fm1Machine } from "./machine.mjs";
 import { loadEngine, EMULATOR_DIR } from "./engine.mjs";
@@ -147,6 +148,14 @@ export function registerUnifiedFullTests(test, { engine }) {
     assert.ok(puya.writes >= 0 && uc.writes >= 0);
     assert.equal(typeof puya.m.flashWip(), "boolean");
     assert.deepEqual(legacy.m.observe().halted, false);
+  });
+}
+
+export function registerUnifiedAppTests(test) {
+  test("application chip test modes (ci/chip-mode-tests.mjs --full): the page's own comparison code on the real shipped and unified engines, the saving rules, the report", () => {
+    const r = spawnSync(process.execPath, [resolve(ROOT, "ci/chip-mode-tests.mjs"), "--full"], { encoding: "utf8", timeout: 300_000 });
+    assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /PASS: 13 chip mode tests \(full\)/);
   });
 }
 

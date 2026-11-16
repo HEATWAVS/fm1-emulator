@@ -4,6 +4,8 @@
 // in the wasm: a catalog entry's fetched from its author's site, or one opened from this
 // computer (M-VAVE's own: their server does not let other pages fetch it).
 import { fetchPackage } from "./fwsc.js";
+import { ENGINE_FILES } from "./chipmode.js?v=1";
+import { initChipTest } from "./chiptest.js?v=1";
 import { SaveStore, packageHash, changedSectors, packSectors, exportSave, importSave } from "./persistence.js";
 import "./catalog-source.js";
 import { judgeSecond, recovered } from "./perf-judge.js?v=3";
@@ -105,6 +107,12 @@ const saveFailure = error => {
 const CAPS = await fetch("classify.json?v=53").then(r => r.json()).then(a => Object.fromEntries(a.map(x => [x.id, x]))).catch(() => ({}));
 
 const wasm = await (await fetch("fm1_web.wasm?v=25")).arrayBuffer();   // the worklet gets its own copy (bump v when the wasm is rebuilt)
+// Flash chip test modes (chipmode.js): Default runs this engine; the others run the unified engine, fetched on first use. The panel below is always drawn by THIS engine's instance.
+const engineBytes = { shipped: wasm };
+async function engineBytesFor(mode) {
+  const e = ENGINE_FILES[mode.engine];
+  return engineBytes[mode.engine] ??= await (await fetch(`${e.file}?v=${e.v}`)).arrayBuffer();
+}
 // (the panel's instance runs no machine: its JIT import is never called)
 const ui = (await WebAssembly.instantiate(wasm, { env: { fm1_jit_compile: () => 0 } })).instance.exports;
 // the panel drawn: 0 the FM-1's, 1 the SMK-37's (setBoard; the canvas takes its size)
@@ -387,6 +395,14 @@ if (bufSel) {
     if (node) setLatency(v); else { latency = v; store("fm1.latency", v); }
   });
 }
+
+// the flash chip test panel (chiptest.js): the emulation mode, the report and the comparison
+const chipTest = initChipTest({
+  params, engineBytesFor, packageOf, packageHash,
+  state: () => ({ fw, mhz, jit: jitOn(), running, engine }),
+  reboot: () => { if (sessionLive()) void ensurePlaying(); },
+  flush: () => flushRunning(false),
+});
 
 // a package from this computer: the file picker or a drop on the panel. With M-VAVE's entry
 // chosen, or a file named like theirs, it is that entry's copy and is kept for next time.
@@ -1387,6 +1403,10 @@ function sameSectors(a, b) {
 }
 function saveSnapshot(session, flash, flashRevision) {
   session.flash = flash;
+  if (session.ephemeral) {                // a flash chip test mode: nothing is read from or written to the saved patches
+    if (running === session) saveMessage("Test mode: nothing is saved");
+    return Promise.resolve();
+  }
   const sectors = changedSectors(session.base, flash);
   session.record = { ...session.record, sectors };
   memoryRecords.set(session.record.hash, session.record);
@@ -1460,8 +1480,13 @@ function boot(options = {}) {
         ? { ...options.imported, revision: memoryRecords.get(hash)?.revision || options.imported.revision }
         : memoryRecords.get(hash) || record;
       if (options.reset) record = { ...record, sectors: [] };
-      const sectors = record?.sectors || [];
-      const session = { seq, forceSave: !!(options.reset || options.imported || record?.unsaved),
+      // a flash chip test mode starts from the package's own flash, never reads the saved patches, and never writes them (saveSnapshot)
+      const mode = chipTest.mode(), chipTiming = chipTest.timing(), ephemeral = mode.test;
+      const bytesForEngine = await engineBytesFor(mode);
+      if (seq !== bootSeq) return false;
+      const sectors = ephemeral ? [] : record?.sectors || [];
+      chipTest.notePackage({ id: f.id, name: f.name, bytes: got.bytes, hash });
+      const session = { seq, ephemeral, mode, timing: chipTiming, forceSave: !ephemeral && !!(options.reset || options.imported || record?.unsaved),
         persistedSectors: record?.sectors || [], entry: DEV.key + f.id, revision: record?.revision || 0,
         record: { version: 1, hash, name: f.name, byo: !!(f.byo || record?.byo), device: DEVICE, package: got.bytes, url: got.url,
           sectors, revision: record?.revision || 0 } };
@@ -1482,7 +1507,7 @@ function boot(options = {}) {
         bootWaiters.set(seq, { resolve, reject, timer });
       });
       window.FM1Loader?.stage("initializing virtual hardware");
-      engine.postMessage({ type: "boot", seq, wasm: wasm.slice(0), package: got.bytes.slice().buffer,
+      engine.postMessage({ type: "boot", seq, wasm: bytesForEngine.slice(0), engineId: mode.engine, chip: mode.chip, chipTiming, package: got.bytes.slice().buffer,
         sectors: packSectors(sectors).buffer, syx: importedBank ? importedBank.slice().buffer : null,
         mhz: clock, jit: jitOn(),
         jitMax: window.FM1Desktop ? 32 : 16,
@@ -1574,7 +1599,7 @@ async function startAudio() {
       node.port.onmessage = (e) => { if (e.data?.type === "stream") stream = e.data; };
       engine = worker;
     } else {
-      await ac.audioWorklet.addModule("worklet.js?v=30");
+      await ac.audioWorklet.addModule("worklet.js?v=31");
       node = new AudioWorkletNode(ac, "fm1", { numberOfInputs: 0, outputChannelCount: [2] });
       engine = node.port;
     }
@@ -1619,7 +1644,11 @@ function onWorklet(e) {
   if (m.type === "flash-changed") {
     const session = sessions.get(m.seq);
     if (session) session.observedRevision = m.revision;
-    if (session === running) saveMessage("Saving…");
+    if (session === running) saveMessage(session?.ephemeral ? "Test mode: nothing is saved" : "Saving…");
+    return;
+  }
+  if (m.type === "chip-status") {
+    chipTest.onWorkletMessage(m);
     return;
   }
   if (m.type === "snapshot") {
