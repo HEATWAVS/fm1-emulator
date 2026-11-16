@@ -1,6 +1,6 @@
 # Boot area: evidence ledger (Component 7, Stage 7A)
 
-Last updated: 2026-11-15. Status: **Stage 7A (evidence): committed (`d7832e0`). Stage 7B (the diagnostic classifier and its tests): implemented, see "Stage 7B" below.** The curated scenarios (7C) are not started.
+Last updated: 2026-11-15. Status: **Stage 7A (evidence): committed (`d7832e0`). Stage 7B (the diagnostic classifier and its tests): committed (`75e9ae2`). Stage 7C (curated scenarios and deterministic reports): implemented, see "Stage 7C" below and `BOOT-AREA-SCENARIOS.md`.**
 
 **Nothing here states what a physical FM-1 does.** Every entry below is a statement about this emulator, about the firmware packages, about decoded structure, or a claim made in project documentation. An emulator-defined verdict about the boot area must never be read as proof that a real unit is bricked, bootable or recoverable.
 
@@ -119,6 +119,16 @@ Every rule is listed in the report with its evidence labels, region, consequence
 
 **Key-derivation boundaries.** `CHIP_KEY_VECTORS` in `fwscport.mjs` are seven synthetic blobs that pin the 0xE0/0x10 clamps and the strict comparison; `fwscportcheck.mjs` crafts a package for each (blob and app area scrambled with the listed key) and the shipped engine boots it to the expected window, so the engine derives exactly those keys (EMULATOR). The catalogue's two real blobs never reach those branches.
 
+### Stage 7C: curated scenarios and deterministic reports
+
+90 rows (`ci/machine/bootareascenarios.mjs`): 6 intact references (one package per layout), the 16 pure and 6 chip-engine scenarios of 7B (inherited by id), the 8-damage matrix on the five other layouts (40), 7 combined damages, 5 interrupted-cycle inputs, 1 recovery-assumption row, 7 new interrupted harness cycles on the chip-profile engine, and 2 divergence rows. Each row reports the primary label, the emulator verdict and the flags side by side, the unpacker's refusal, the per-region changed/indeterminate counts and the rules that applied with their evidence labels; `hardwareBootability` is `unknown` and the recovery assessment `recovery-unknown` in every row, and the only HYPOTHETICAL content is the recovery-assumption row. The results are in `ci/machine/fixtures/bootarea-scenarios.json` (machine-readable, one row per line, `reportSha256` `60699d37a731260c50662cde0fcef013790a939e0f276065943db67aea08b021`) and `BOOT-AREA-SCENARIOS.md` (generated, sha256 `db7004fab88617cd0b6e6b49d59eb92a06b0d7d55ef22684488e27141a6fa4a8`); `node ci/machine/bootareascenarios.mjs --check` rebuilds and compares them.
+
+**Pairing guard.** Every reference is pinned by SHA-256 (package, intact image, and Felucca's engine base flash for the machine rows) and a wrong reference throws `ReferenceMismatchError` instead of being diagnosed against (D92).
+
+**Findings the rows make visible (no classifier change; flagged in the 7C plan and approved).** (1) The primary label can hide the verdict: a flash zeroed everywhere is `unmodelled` while the emulator verdict is `emulator-unbootable`. (2) An interrupted cycle in the app area only gives primary `not-evaluable` (no boot-area rule applies and the app-area bytes the unpacker reads are unknown). (3) After an interrupted 4 KiB erase at 0x3000 with synthetic outcome `ff`, the rebooted flash shows a derived key that differs and an unpacker refusal, but the verdict stays `not-evaluable` because those bytes are unknown. (4) A gap program cut with outcome `new` changes 256 bytes but they are also unknown, so there is no `boot-area-written` flag. (5) The 4 KiB range at 0x3000 is at risk but still `emulator-bootable` for picovave, whose boot area ends at 0x10CD. (6) Both divergence rows boot a flash the diagnostic labels unbootable or at risk, because the engine boots from the package.
+
+**Not claimed.** Nothing here says a unit would start or could be recovered; the interrupted outcomes are synthetic inputs; the SPL and the mask ROM are not run; a decoded SPL finding is not promoted; `app_dir_head2` decides nothing; 0xFF000 stays package evidence and unmodelled.
+
 ### Tests (counts in TESTING.md)
 
 Quick tier (shipped engine): rule table and vocabulary; layout fixture against the 7A facts; scenario catalogue; 16 pure scenarios on Felucca (header, sector 0 zeroed/erased, key blob changing the key, bad CRC with the same key, stored CRC only, renamed `app_dir_head` / key entry, SPL bit, SPL uncertain, gap, 0xFF000, app only, unterminated directory, `old` outcome on sector 0 and on 0xFF000); app-area boundaries; unterminated directory; purity; the 17 surveyed firmware and the nine undecoded-SPL packages; the nine's SPL status; missing/invalid reference; independent counts; recovery defaults and hypotheticals; survey evidence; the adapter; the divergence. Full tier: all 277 intact packages, the regenerated fixture, the running divergence; with the chip engine (SKIPPED without it), interrupted 4 KiB erases at sector 0 and 0xFF000 under the outcomes `old`, `ff` and `zero`, diagnosed powered off and after the reboot (at-risk and unmodelled hold whatever bytes the outcome leaves), and the adapter on the fault-injection engine.
@@ -130,7 +140,9 @@ node ci/machine/fwscportcheck.mjs            # 17 firmware, every condition and 
 node ci/machine/fwscportcheck.mjs --all      # the unchanged-package condition for all 277
 node ci/machine/bootareafacts.mjs            # the PACKAGE facts match fixtures/bootarea-facts.json
 node ci/machine/bootareacatalogue.mjs        # the layout fixture matches the 277 packages (--write regenerates it)
-node ci/machine/selftest.mjs --filter "boot area"   # the 7B tests (quick and full tier)
+node ci/machine/selftest.mjs --filter "boot area"   # the 7B and 7C tests (quick and full tier; the chip-engine tests are SKIPPED without the engine)
+node ci/machine/bootareascenarios.mjs        # 7C: rebuild the 90 rows and compare with the committed report and summary (live rows SKIPPED without the chip engine)
+node ci/machine/bootareascenarios.mjs --write   # regenerate both (needs the chip-profile engine)
 ```
 
 The SPL scan is a one-off made with a scratch tool outside the repository (a copy of the `fm1-isa` crate plus a linear-sweep scanner); `fixtures/bootarea-spl-findings.json` records its structural results only. It can be rebuilt from the description above.
