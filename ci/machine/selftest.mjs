@@ -37,6 +37,7 @@ import { registerFaultSurveyQuickTests, registerFaultSurveyLiveTests } from "./f
 import { registerRecoveryQuickTests, registerRecoveryFullTests, registerRecoveryLiveTests } from "./recoverytests.mjs";
 import { registerBootAreaQuickTests, registerBootAreaFullTests, registerBootAreaLiveTests } from "./bootareatests.mjs";
 import { registerBootArea7CQuickTests, registerBootArea7CFullTests, registerBootArea7CLiveTests } from "./bootarea7ctests.mjs";
+import { registerUnifiedQuickTests, registerUnifiedFullTests, registerUnifiedLiveTests } from "./unifiedtests.mjs";
 import { FlashChipError, FLASH_CHIPS, parseFlashChip, parseFlashTiming, resolveFlashChipOptions, parseFlashUid, uidWords } from "./flashchip.mjs";
 import { PIN, defaultEnginePath, verifyEngineFile } from "../engine/verify.mjs";
 import { renderTables } from "../engine/tables.mjs";
@@ -634,6 +635,9 @@ registerBootAreaLiveTests(test.chip, { chipEngine });   // interrupted sector-0 
 registerBootArea7CQuickTests(test.quick);   // the curated boot-area scenarios: catalogue, identity guard, 43 quick pure rows, committed report and summary (Component 7, Stage 7C), quick tier
 registerBootArea7CFullTests(test, { engine });   // the running divergence on the shipped engine, the machine reference guard and the CLI incl. its SKIPPED output (Component 7, Stage 7C), full tier, no chip engine needed
 registerBootArea7CLiveTests(test.chip, { chipEngine });   // the 13 interrupted-cycle rows and the chip divergence replayed against the committed report (Component 7, Stage 7C), full tier, SKIPPED without the chip engine
+registerUnifiedQuickTests(test.quick);   // the unified engine (Component 8, Stage 2): pin, committed binary identity, notices, quick tier
+registerUnifiedFullTests(test, { engine });   // the committed unified engine against the shipped one: display, audio, flash, USB, audio-in queue, XIP-tail switch, chip profiles; full tier, never SKIPPED
+registerUnifiedLiveTests(test.chip, { chipEngine });   // the unified engine against the pinned chip-profile engine under both profiles; full tier, SKIPPED without the chip engine
 registerChipTests(test.quick);                  // flash-chip reference model (datasheet conformance, incl. fault injection), quick tier
 registerFaultRegressionTests(test, { genPath: resolve(import.meta.dirname, "../engine/gen-transcripts.mjs") });   // full tier: transcripts unchanged with faults disabled
 

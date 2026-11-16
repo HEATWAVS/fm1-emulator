@@ -73,6 +73,11 @@ export async function loadEngine({ wasmPath = resolve(EMULATOR_DIR, "fm1_web.was
       flashUid: has("fm1_flash_uid_set", "fm1_flash_uid_clear"),           // the 4Bh Read Unique ID fixture (a chip-profile engine from the 4Bh port on)
       testBus: has("fm1_test_bus_write32", "fm1_test_bus_read32", "fm1_test_advance_us", "fm1_test_set_wp"),
       resetCounter: has("fm1_resets"),
+      // The shipped engine's USB host exports and the unified engine's (Component 8 Stage 2; the chip-profile engine of ci/engine/build.mjs has none): the cable,
+      // the enumerated configuration descriptor, the USB audio input into the device, and the switch for the decoded XIP window's tail (0 as the shipped engine, 1 as v0.3.0).
+      usbHost: has("fm1_usb_plug", "fm1_usb_conf", "fm1_usb_conf_len"),
+      audioIn: has("fm1_audio_in", "fm1_audio_in_buf", "fm1_audio_pending", "fm1_has_audio_in"),
+      xipTailSwitch: has("fm1_xip_tail"),
     },
     instantiate() {
       let exports;

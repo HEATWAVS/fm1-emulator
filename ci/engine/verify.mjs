@@ -29,3 +29,25 @@ export function verifyEngineFile(path, { rustc = null } = {}) {
   const exportsOk = !missing.length && !unexpected.length;
   return { path, sha256, bytes: bytes.length, exports, imports, missing, unexpected, importsOk, exportsOk, rustc, hash, ok: exportsOk && importsOk && hash !== "MISMATCH" };
 }
+
+/** The unified engine's own pin (Component 8 Stage 2): where build.mjs --unified puts it, and the same checks against pin.json's `unified` section. */
+export const UNIFIED = PIN.unified;
+export const unifiedEnginePath = () => resolve(DEFAULT_OUT, UNIFIED.artifact);
+export function verifyUnifiedFile(path, { rustc = null } = {}) {
+  const bytes = readFileSync(path);
+  const module = new WebAssembly.Module(bytes);
+  const exports = WebAssembly.Module.exports(module).map((e) => e.name).sort();
+  const imports = WebAssembly.Module.imports(module).map((i) => `${i.module}.${i.name}`).sort();
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const missing = UNIFIED.expectedExports.filter((n) => !exports.includes(n));
+  const unexpected = exports.filter((n) => !UNIFIED.expectedExports.includes(n));
+  const importsOk = JSON.stringify(imports) === JSON.stringify(PIN.expectedImports);
+  if (rustc === null) {
+    const rec = resolve(dirname(path), "BUILD-RECORD-UNIFIED.json");
+    if (existsSync(rec)) rustc = JSON.parse(readFileSync(rec, "utf8")).toolchain?.rustc ?? null;
+  }
+  const known = rustc ? UNIFIED.toolchains[rustc] : undefined;
+  const hash = known ? (known.wasmSha256 === sha256 ? "match" : "MISMATCH") : "unverified-toolchain";
+  const exportsOk = !missing.length && !unexpected.length;
+  return { path, sha256, bytes: bytes.length, exports, imports, missing, unexpected, importsOk, exportsOk, rustc, hash, ok: exportsOk && importsOk && hash !== "MISMATCH" };
+}

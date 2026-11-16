@@ -84,15 +84,36 @@ Without a built engine the live chip tests in `npm run test:machine` are reporte
 the SoC cycle counter, `fm1_test_set_wp` sets the WP# pin. `ci/machine/chiplive.mjs` uses them so the chip can be exercised without running firmware and
 with a clock the test controls. Do not use them while the machine is rendering.
 
+## The unified engine (Component 8, Stage 2)
+`node ci/engine/build.mjs --unified` also builds **`fm1_web_unified.wasm`**: this chip-profile engine plus the USB exports the shipped engine has
+(`fm1_usb_plug`, `fm1_usb_conf`, `fm1_usb_conf_len`, `fm1_has_usr`), a USB audio-in host (`fm1_audio_in`, `fm1_audio_in_buf`, `fm1_audio_pending`,
+`fm1_has_audio_in`) and `fm1_xip_tail` (the switch below). It is the engine the application uses for its chip-test modes; the shipped
+`site/emulator/fm1_web.wasm` stays the Default. Its pin is `pin.json` `unified`; its binary is **committed** as `site/emulator/fm1_web_unified.wasm`
+(sha256 `58bacde65163d8de17296c36a0da365a5c3e94a2616ba99e4b59bb5b61be3d30`, 2,746,487 bytes, rustc 1.97.1 on Windows: the one toolchain verified), so the
+tests and the app never need a build. The build needs a clone of the **whole** upstream repository (it reads commit `9acb2df`; a shallow clone is refused).
+
+How it is made: the pinned v0.3.0 tree with `chip-profiles.patch`, then `usb.rs` replaced **whole** by upstream commit
+`9acb2df464c7d91347f0c114423d955d909f4448`'s (blob `43af499a63d5d8d00169f38fc53df8ebe9900fae`; the build proves it differs from v0.3.0's only at line 36,
+the SPDX identifier, `GPL-3.0-only` to `MIT`), then `unified-engine.patch` (8 hunks: `fwsc.rs`, `usb.rs`, `fm1-web/src/lib.rs`). The pinned v0.3.0 `usb.rs` is
+never used in a unified build. Notice: `LICENSES/MIT-fm1-emu.txt`, `NOTICE.md`.
+
+Stage 2's scratch rebuild gate: the Stage 1 validated binary (built with the v0.3.0 `usb.rs`) and this build (with the `9acb2df` one) are the **same binary**
+(identical sha256), so the Stage 1 measurements stand for it; the pipeline reproduces both `fm1_web_chips.wasm` (`28dacdb4…`) and the unified engine on one machine.
+
+### XIP-tail switch (`fm1_xip_tail(mode)`, before a boot)
+Mode 0 (the default) leaves the bytes after the app area as stored, as the shipped engine does; mode 1 decrypts them up to the protected image's end, as
+upstream v0.3.0 and its newer versions do. Resolved in Stage 1: the 3,488-byte difference (below) is exactly this. Mode 0 gives decoded XIP windows identical to the
+shipped engine's on 277 of 277 packages; mode 1 gives XIP and flash identical to a plain v0.3.0 build on 277 of 277. Which one matches real hardware is **not known**.
+
 ## Known limitations
-- **No USB host in this engine.** Upstream v0.3.0 has no `fm1_usb_plug` (a fork addition), so `usb: true` has no effect here; compare against
-  the shipped engine only with `usb: false`.
-- **Known XIP-tail difference (not investigated).** The shipped engine and this v0.3.0-based engine differ in 3,488 of the 585,728 bytes of the
-  decoded XIP window, at flash offsets `0x9225B-0x93000` (the end of the window): the shipped engine shows the erased bytes there as `0xFF`,
-  v0.3.0 shows scrambled values. Present at boot for every firmware, reproducible, no behavioural difference seen in any compared run.
+- **No USB host in this (chip-profile) engine.** Upstream v0.3.0 has no `fm1_usb_plug` (a fork addition), so `usb: true` has no effect here; compare against
+  the shipped engine only with `usb: false`. The **unified engine** has the host.
+- **XIP-tail difference (explained in Stage 1).** This v0.3.0-based engine and the shipped engine differ in 3,488 of the 585,728 bytes of the
+  decoded XIP window, at flash offsets `0x9225B-0x93000`: the shipped engine leaves the bytes after the app area as stored (erased `0xFF`), v0.3.0 decrypts
+  them. The unified engine's `fm1_xip_tail` selects either.
 - Not proof of equivalence with the fork: see `docs/dev/TESTING.md` for exactly what was compared.
 - The Rust crate's transcript tests are `#[ignore]` unless `FM1_CHIP_ORACLE` names a transcript (`gen-transcripts.mjs`); `build.mjs --test` does this for you.
 
 ## Files
-`build.mjs` build and verify | `verify.mjs` pin checks | `pin.json` pins | `chip-profiles.patch` | `tables.mjs`/`gen-tables.mjs` table generator |
+`build.mjs` build and verify | `verify.mjs` pin checks | `pin.json` pins | `chip-profiles.patch` | `unified-engine.patch` (the unified engine) | `tables.mjs`/`gen-tables.mjs` table generator |
 `gen-transcripts.mjs` deterministic oracle transcripts from the Stage A model (about 4.7 MB, 145,587 lines; generated, not committed).

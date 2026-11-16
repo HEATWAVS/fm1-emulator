@@ -1,0 +1,2 @@
+# the engine patches are applied with git apply to LF blobs: never convert their line endings
+ci/engine/*.patch -text

@@ -1,0 +1,190 @@
+diff --git a/crates/fm1-soc/src/fwsc.rs b/crates/fm1-soc/src/fwsc.rs
+index 5b49b81..46fb697 100644
+--- a/crates/fm1-soc/src/fwsc.rs
++++ b/crates/fm1-soc/src/fwsc.rs
+@@ -12,6 +12,11 @@
+ //! which updates leave alone: real units carry the factory bank there. `usr_fill_defaults`
+ //! puts this emulator's own small bank into a blank one, `usr_load_syx` a DX7 32-voice bank.
+ 
++/// Unified-engine option (Stage 1): 0 (default) leaves the bytes after the app area as stored, as the
++/// shipped engine does; 1 decrypts them up to the protected image's end, as upstream v0.3.0 does.
++/// Set with fm1_xip_tail before a boot.
++pub static XIP_TAIL_DECRYPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++
+ pub(crate) fn unmask(buf: &mut [u8], mut key: u16) {
+     for b in buf {
+         *b ^= key as u8;
+@@ -249,7 +254,7 @@ fn unpack_n(file: &[u8], blocks: usize) -> Result<Unpacked, String> {
+         .map(|h| h.size)
+         .filter(|&e| e > area + size && e <= flash.len())
+         .unwrap_or(area + size);
+-    if end > area + size {
++    if end > area + size && XIP_TAIL_DECRYPT.load(std::sync::atomic::Ordering::Relaxed) {
+         let blk = area + first + ((area + size).saturating_sub(area + first) & !31);
+         let mut t = raw[..end].to_vec();
+         unscramble(&mut t, blk, end - blk, area, key);
+diff --git a/crates/fm1-soc/src/usb.rs b/crates/fm1-soc/src/usb.rs
+index 43af499..d274877 100644
+--- a/crates/fm1-soc/src/usb.rs
++++ b/crates/fm1-soc/src/usb.rs
+@@ -208,6 +208,22 @@ pub struct Usb {
+     /// Packets each way on the MIDI endpoints.
+     pub out_packets: u64,
+     pub in_packets: u64,
++    /// The audio-class host: isochronous OUT, the computer's audio into the device.
++    pub audio: AudioHost,
++}
++
++#[derive(Clone, Debug, Default)]
++pub struct AudioAlt { pub iface: u8, pub alt: u8, pub ep: u8, pub ch: u8, pub sub: u8, pub rate: u32, pub maxp: u16 }
++
++#[derive(Default)]
++pub struct AudioHost {
++    pub alts: Vec<AudioAlt>,
++    pub sel: Option<usize>,
++    /// 44.1 kHz stereo frames as signed 24-bit integers, waiting to go out.
++    pub q: VecDeque<[i32; 2]>,
++    acc: u32,
++    pub packets: u64,
++    pub naks: u64,
+ }
+ 
+ impl Usb {
+@@ -548,6 +564,7 @@ impl Usb {
+     // --------------------------------------------------------------------- the host ---
+ 
+     /// Configured, and what it is called.
++    pub fn conf_bytes(&self) -> &[u8] { &self.conf }
+     pub fn product(&self) -> Option<&str> {
+         (self.host == HostState::Configured).then_some(self.product.as_str())
+     }
+@@ -619,7 +636,7 @@ impl Usb {
+                 self.start_step(Step::DevDesc8);
+             }
+             HostState::Enum(step) => self.enumerate(dma, step),
+-            HostState::Configured => self.midi_frame(dma),
++            HostState::Configured => { self.midi_frame(dma); self.audio_frame(dma); }
+             _ => {}
+         }
+     }
+@@ -747,6 +764,7 @@ impl Usb {
+             }
+             Step::SetConfig => {
+                 self.find_midi();
++                self.find_audio();
+                 let vid = u16::from_le_bytes([self.dev_desc[8], self.dev_desc[9]]);
+                 let pid = u16::from_le_bytes([self.dev_desc[10], self.dev_desc[11]]);
+                 self.log(|| format!("configured: \"{}\" {vid:04x}:{pid:04x}, MIDI OUT ep {} IN ep {}",
+@@ -788,6 +806,72 @@ impl Usb {
+         }
+     }
+ 
++    /// The isochronous OUT streaming alternate settings of the configuration (audio class 1, subclass 2).
++    /// No SET_INTERFACE is sent: the shipped engine's host behaves as if it sends none (Stage 0: 8 of 8 queue traces).
++    fn find_audio(&mut self) {
++        self.audio.alts.clear();
++        self.audio.sel = None;
++        let (mut i, mut iface, mut alt, mut stream) = (0usize, 0u8, 0u8, false);
++        let (mut ch, mut sub, mut rate) = (2u8, 2u8, 44100u32);
++        while i + 2 <= self.conf.len() {
++            let (len, ty) = (self.conf[i] as usize, self.conf[i + 1]);
++            if len < 2 { break; }
++            match ty {
++                4 if i + 7 <= self.conf.len() => { iface = self.conf[i + 2]; alt = self.conf[i + 3]; stream = self.conf[i + 5] == 1 && self.conf[i + 6] == 2; }
++                0x24 if stream && i + 11 <= self.conf.len() && self.conf[i + 2] == 2 => {
++                    ch = self.conf[i + 4]; sub = self.conf[i + 5];
++                    rate = self.conf[i + 8] as u32 | (self.conf[i + 9] as u32) << 8 | (self.conf[i + 10] as u32) << 16;
++                }
++                5 if stream && i + 7 <= self.conf.len() && self.conf[i + 2] & 0x80 == 0 && self.conf[i + 3] & 3 == 1 => {
++                    let maxp = u16::from_le_bytes([self.conf[i + 4], self.conf[i + 5]]);
++                    self.audio.alts.push(AudioAlt { iface, alt, ep: self.conf[i + 2], ch, sub, rate, maxp });
++                }
++                _ => {}
++            }
++            i += len;
++        }
++        if !self.audio.alts.is_empty() { self.audio.sel = Some(0); }
++    }
++
++    /// The computer's audio (interleaved stereo f32, 44.1 kHz). A chunk is taken while fewer than 147,456 bytes (24-bit stereo) wait.
++    pub fn audio_in(&mut self, s: &[f32]) {
++        if self.audio.q.len() * 6 >= 147_456 { return; }
++        for p in s.chunks_exact(2) {
++            let c = |v: f32| (v.clamp(-1.0, 1.0) * 8_388_607.0) as i32;
++            self.audio.q.push_back([c(p[0]), c(p[1])]);
++        }
++    }
++    pub fn audio_pending(&self) -> u32 { (self.audio.q.len() * 6) as u32 }
++    pub fn has_audio(&self) -> bool { self.audio.sel.is_some() }
++
++    fn audio_frame(&mut self, dma: &mut dyn Dma) {
++        let Some(i) = self.audio.sel else { return };
++        if self.audio.q.is_empty() { return; }
++        let a = self.audio.alts[i].clone();
++        let acc = self.audio.acc + a.rate;
++        let step = 44100.0 / a.rate as f64;
++        let bytes = (a.sub as usize) * (a.ch as usize);
++        let n = ((acc / 1000) as usize).min(a.maxp as usize / bytes.max(1));
++        let mut data = Vec::with_capacity(n * bytes);
++        for k in 0..n {
++            let idx = ((k as f64 * step) as usize).min(self.audio.q.len() - 1);
++            let [l, r] = self.audio.q[idx];
++            let vals: [i32; 2] = if a.ch == 1 { [(l + r) / 2, 0] } else { [l, r] };
++            for v in vals.iter().take(a.ch as usize) {
++                match a.sub { 3 => data.extend_from_slice(&v.to_le_bytes()[..3]), 4 => data.extend_from_slice(&(v << 8).to_le_bytes()), _ => data.extend_from_slice(&((*v >> 8) as i16).to_le_bytes()) }
++            }
++        }
++        let addr = self.addr;
++        if self.dev_out(dma, addr, (a.ep & 0xf) as usize, &data) == Reply::Ack {
++            let used = ((n as f64 * step).round() as usize).min(self.audio.q.len());
++            self.audio.q.drain(..used);
++            self.audio.acc = acc % 1000;
++            self.audio.packets += 1;
++        } else {
++            self.audio.naks += 1;
++        }
++    }
++
+     fn midi_frame(&mut self, dma: &mut dyn Dma) {
+         let addr = self.addr;
+         if self.midi_out_ep != 0 && !self.out_q.is_empty() {
+diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
+index c505c18..e0ef0eb 100644
+--- a/crates/fm1-web/src/lib.rs
++++ b/crates/fm1-web/src/lib.rs
+@@ -880,6 +880,35 @@ pub extern "C" fn fm1_pot(v: u32) {
+     }
+ }
+ 
++/// The virtual USB host (fm1_soc::usb): the same calls the shipped engine exports.
++#[no_mangle]
++pub extern "C" fn fm1_usb_plug() {
++    if let Some(m) = machine() { m.soc.usb_plug(); }
++}
++#[no_mangle]
++pub extern "C" fn fm1_usb_conf_len() -> u32 { machine().map_or(0, |m| m.soc.usb.conf_bytes().len() as u32) }
++#[no_mangle]
++pub extern "C" fn fm1_usb_conf() -> *const u8 { machine().map_or(std::ptr::null(), |m| m.soc.usb.conf_bytes().as_ptr()) }
++#[no_mangle]
++pub extern "C" fn fm1_has_usr() -> u32 { machine().is_some_and(|m| m.usr.is_some()) as u32 }
++
++/// USB audio in: interleaved stereo f32 at 44.1 kHz, 8192 floats per chunk, as the shipped engine takes it.
++static mut AUDIO_IN: [f32; 8192] = [0.0; 8192];
++#[no_mangle]
++pub extern "C" fn fm1_audio_in_buf() -> *mut f32 { unsafe { std::ptr::addr_of_mut!(AUDIO_IN) as *mut f32 } }
++#[no_mangle]
++pub extern "C" fn fm1_audio_in(frames: u32) {
++    if let Some(m) = machine() { let n = (frames as usize * 2).min(8192); let s = unsafe { std::slice::from_raw_parts(std::ptr::addr_of!(AUDIO_IN) as *const f32, n) }; m.soc.usb.audio_in(s); }
++}
++#[no_mangle]
++pub extern "C" fn fm1_audio_pending() -> u32 { machine().map_or(0, |m| m.soc.usb.audio_pending()) }
++#[no_mangle]
++pub extern "C" fn fm1_has_audio_in() -> u32 { machine().is_some_and(|m| m.soc.usb.has_audio()) as u32 }
++
++/// XIP tail mode for the next boot: 0 as the shipped engine (default), 1 as upstream v0.3.0.
++#[no_mangle]
++pub extern "C" fn fm1_xip_tail(mode: u32) { fm1_soc::fwsc::XIP_TAIL_DECRYPT.store(mode != 0, std::sync::atomic::Ordering::Relaxed); }
++
+ /// Emulated milliseconds since boot.
+ #[no_mangle]
+ pub extern "C" fn fm1_ms() -> u32 {

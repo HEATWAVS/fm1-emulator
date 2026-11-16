@@ -4,7 +4,7 @@ The FM-1 Emulator bundles work by many people. Thank you to all of them.
 
 ## Emulation engine
 
-- **fm1-emu** by Joakim Eriksson — the Rust/WebAssembly pi32v2 emulation engine and base player page this project forks. License: MIT. https://github.com/joakimeriksson/fm1-emu
+- **fm1-emu** by Joakim Eriksson — the Rust/WebAssembly pi32v2 emulation engine and base player page this project forks. License: MIT (Copyright (c) 2026 Joakim Eriksson; the notice is in `LICENSES/MIT-fm1-emu.txt`). https://github.com/joakimeriksson/fm1-emu
 
 ## Bundled firmware (277)
 
