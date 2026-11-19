@@ -1,8 +1,8 @@
-// Headless comparison of one firmware package across the original engine and the two flash-chip profiles (Component 8, Stage 2). Plain ES module: the page's
+// Headless comparison of one firmware package across the previous shipped engine, the unified engine and the two flash-chip profiles (Component 8, Stage 2). Plain ES module: the page's
 // worker (chipcompare-worker.js) and the Node tests (ci/chip-mode-tests.mjs) both use it. It touches no storage and no audio device: each configuration is a fresh
 // machine run for a fixed amount of emulated time with NO key presses, on the interpreter (the deterministic reference), USB plugged.
 import { applyPackageResources } from "./package-resources.js?v=1";
-import { applyChipProfile, chipStatus, compareScoped } from "./chipmode.js?v=2";
+import { applyChipProfile, chipStatus, compareScoped, comparePair, chipVerdict } from "./chipmode.js?v=14";
 
 const SAMPLE_RATE = 44100, QUANTUM = 128, FLASH_LEN = 1 << 20, SECTOR = 4096;
 const hashU16 = (a) => { let h = 0x811c9dc5; for (let i = 0; i < a.length; i++) { h ^= a[i]; h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, "0"); };
@@ -58,12 +58,12 @@ export async function runConfig({ module, pkg, mhz = 100, chip = null, timing = 
 }
 
 /**
- * The comparison: the original engine, then the unified engine with the original flash model, then under the Puya and the UC25HQ80 profiles (row 2 separates the engine from the chip: see compareScoped). `engines`: { shipped: Module, unified: Module }.
- * Returns { seconds, rows: [{ label, result | error }], differences: [text] }. A configuration that cannot run is reported, never skipped silently.
+ * The comparison: the previous shipped engine, then the unified engine with the original flash model (and without the CPU optimization, which is not observable: the interpreter runs here), then under the Puya and the UC25HQ80 profiles (row 2 separates the engine from the chip: see compareScoped). `engines`: { shipped: Module, unified: Module }.
+ * Returns { seconds, timing, rows: [{ label, chip, result | error }], differences: [text], chipDifferences: [text] (the two chips against each other), verdict } (verdict: chipmode.js chipVerdict, the plain-language result). A configuration that cannot run is reported, never skipped silently.
  */
 export async function runComparison({ engines, pkg, mhz = 100, seconds = 3, timing = "typical", onProgress = () => {} }) {
   const plan = [
-    { label: "Default (original engine)", module: engines.shipped, chip: null },
+    { label: "Previous engine (shipped fm1_web.wasm)", module: engines.shipped, chip: null },
     { label: "Original flash model on the unified engine", module: engines.unified, chip: null },
     { label: "Older FM-1 flash: Puya P25Q80H profile", module: engines.unified, chip: "puya" },
     { label: "Newer FM-1 flash: UC25HQ80 profile", module: engines.unified, chip: "uc25hq80" },
@@ -71,9 +71,12 @@ export async function runComparison({ engines, pkg, mhz = 100, seconds = 3, timi
   const rows = [];
   for (const [i, c] of plan.entries()) {
     onProgress(`${i + 1} of ${plan.length}: ${c.label}`);
-    try { rows.push({ label: c.label, result: await runConfig({ module: c.module, pkg, mhz, chip: c.chip, timing, seconds }) }); }
-    catch (error) { rows.push({ label: c.label, error: String(error?.message ?? error) }); }
+    try { rows.push({ label: c.label, chip: c.chip, result: await runConfig({ module: c.module, pkg, mhz, chip: c.chip, timing, seconds }) }); }
+    catch (error) { rows.push({ label: c.label, chip: c.chip, error: String(error?.message ?? error) }); }
   }
   const differences = compareScoped({ def: rows[0], original: rows[1], puya: rows[2], uc: rows[3] });
-  return { seconds, timing, rows, differences };
+  // what the report lists: only the two chips against each other (the control rows and the engine lines stay out of it)
+  const chipDifferences = rows[2]?.result && rows[3]?.result ? comparePair(rows[2], rows[3], false, "chip") : [];
+  const verdict = chipVerdict({ original: rows[1], puya: rows[2], uc: rows[3] });
+  return { seconds, timing, rows, differences, chipDifferences, verdict };
 }

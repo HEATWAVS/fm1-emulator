@@ -23,7 +23,7 @@ self.onmessage = async (e) => {
     globalThis.AudioWorkletProcessor = class {
       constructor() { this.port = { postMessage: (msg, transfer) => self.postMessage(msg, transfer || []), onmessage: null, onmessageerror: null }; }
     };
-    await import("./worklet.js?v=32");
+    await import("./worklet.js?v=44");
     proc = new Processor();
     audio = m.audio;
     audio.onmessage = (a) => { if (a.data?.type === "need") { credit += a.data.frames; render(); } };

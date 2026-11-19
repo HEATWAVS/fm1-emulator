@@ -8,7 +8,7 @@
 // Default) on a set of firmware, USB descriptor included; the USB audio-in queue traces; the XIP-tail switch; the chip profiles selected on it. These are not a
 // replacement for the Stage 1 lockstep over all 277 packages (documented in docs/dev/ARCHITECTURE.md), which is a manual measurement.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -48,13 +48,13 @@ export function registerUnifiedQuickTests(testQuick) {
     const rustc = Object.keys(UNIFIED.toolchains)[0];
     const v = verifyUnifiedFile(UNIFIED_WASM, { rustc });
     assert.equal(v.hash, "match", `sha256 ${v.sha256}`);
-    assert.equal(v.sha256, "ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b", "the Stage 4 unified engine: the Stage 2 engine (58bacde6…, Stage 1 validated) plus the PLL0 boot state");
+    assert.equal(v.sha256, "5d595ae778bf8cf7c698c463ff175efa0a08313d1272efd30db7b34d3d74e0c8", "the unified engine with the XIP tail decrypted by default (the Stage 4 engine ba1ba889… plus that default; the Stage 2 engine was 58bacde6…)");
     assert.equal(v.bytes, UNIFIED.toolchains[rustc].wasmBytes);
     assert.ok(v.exportsOk, `missing ${v.missing} unexpected ${v.unexpected}`);
     assert.ok(v.importsOk, v.imports.join());
   });
 
-  testQuick("the shipped site/emulator/fm1_web.wasm is untouched (it stays the Default engine)", () => {
+  testQuick("the shipped site/emulator/fm1_web.wasm is untouched (it still draws the panel and is the reference mode)", () => {
     assert.equal(sha(readFileSync(resolve(EMULATOR_DIR, "fm1_web.wasm"))), SHIPPED_WASM_SHA256);
   });
 
@@ -71,6 +71,14 @@ export function registerUnifiedQuickTests(testQuick) {
 }
 
 const FIRMWARE = ["felucca", "zp12", "dx747", "picovave"];
+/** The unified engine with the XIP tail in `mode` (0 = left as stored, as the shipped engine does; 1 = decrypted, as upstream v0.3.0 does and as the unified engine does by default). */
+const tailMode = (u, mode) => ({ ...u, instantiate: () => { const x = u.instantiate(); x.fm1_xip_tail(mode); return x; } });
+/** The decoded XIP window right after a boot. */
+const xipWindow = (engine, pkg) => { const x = Fm1Machine.boot(engine, pkg, { usb: false, jit: false }).x; return new Uint8Array(x.memory.buffer, x.fm1_xip(), x.fm1_xip_len()).slice(); };
+const differing = (a, b) => { const d = []; for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) d.push(i); return d; };
+/** The official stock firmware is not bundled: the test runs where the file is (FM1_STOCK_FWSC, or ../FM1 Firmware/FM-1.fwsc beside the repository) and says so where it is not. */
+export const STOCK_FWSC_SHA256 = "d017fb65e70aca97ee29d944470c3515a74581df5c0576bf70de917c7b2b61d5";
+const stockPath = () => process.env.FM1_STOCK_FWSC || resolve(ROOT, "../FM1 Firmware/FM-1.fwsc");
 const obsOf = (engine, id, { seconds = 2, ...options } = {}) => {
   const m = Fm1Machine.boot(engine, catalogPackage(id), { usb: true, ...options });
   const rows = [];
@@ -86,8 +94,9 @@ const sameObs = (a, b, msg) => {
   assert.deepEqual(drop(projected(b, keys)), drop(projected(a, keys)), msg);
 };
 /** The frames fm1_render reports as real audio over `quanta` renders of 128 frames: the page's own loop, the audio engine's start apart from loudness (ci/pll0-audit.mjs measures the same). */
-const realFrames = (engine, id, quanta) => {
-  const pkg = catalogPackage(id), x = engine.instantiate();
+const realFrames = (engine, id, quanta) => realFramesOf(engine, catalogPackage(id), id, quanta);
+const realFramesOf = (engine, pkg, id, quanta) => {
+  const x = engine.instantiate();
   x.fm1_jit(0, 16); x.fm1_ahead?.(1024);
   const p = x.fm1_alloc(pkg.length); new Uint8Array(x.memory.buffer, p, pkg.length).set(pkg);
   assert.equal(x.fm1_boot_fwsc(p, pkg.length, 0, 0, 100), 0, id);
@@ -124,8 +133,8 @@ export function registerUnifiedFullTests(test, { engine }) {
     assert.equal(engine.capabilities.xipTailSwitch, false);
   });
 
-  test("unified engine, original flash model, USB plugged: the same display, audio, clock, flash, USB descriptor and USB-store flag as the shipped engine (4 firmware, 2 s each, interpreter)", async () => {
-    const u = await U();
+  test("unified engine, original flash model, USB plugged, XIP tail left as stored (mode 0): the same display, audio, clock, flash, USB descriptor and USB-store flag as the shipped engine (4 firmware, 2 s each, interpreter)", async () => {
+    const u = tailMode(await U(), 0);
     for (const id of FIRMWARE) sameObs(obsOf(engine, id), obsOf(u, id), id);
   });
 
@@ -176,12 +185,39 @@ export function registerUnifiedFullTests(test, { engine }) {
     }
   });
 
-  test("unified engine: the XIP-tail switch (mode 0, the default, leaves the window as the shipped engine does; mode 1 decrypts the tail as upstream v0.3.0 does; dx747 shows it in its flash)", async () => {
-    const u = await U(), mode1 = { ...u, instantiate: () => { const x = u.instantiate(); x.fm1_xip_tail(1); return x; } };
-    const shipped = obsOf(engine, "dx747", { usb: false }), m0 = obsOf(u, "dx747", { usb: false }), m1 = obsOf(mode1, "dx747", { usb: false });
-    assert.equal(m0.flashHash, shipped.flashHash, "mode 0 = the shipped engine");
-    assert.notEqual(m1.flashHash, shipped.flashHash, "mode 1 = v0.3.0: a firmware that reads the tail writes a different record");
-    sameObs(obsOf(u, "felucca", { usb: false }), obsOf(mode1, "felucca", { usb: false }), "a firmware that does not read the tail does not notice");
+  test("unified engine: the XIP tail is decrypted by default, as upstream v0.3.0 does (mode 1); mode 0 leaves it as stored, as the shipped engine does; dx747 and clatter are the catalogue's two firmware that read it (recorded differences, not a verdict on which is right)", async () => {
+    const u = await U(), mode0 = tailMode(u, 0), mode1 = tailMode(u, 1);
+    // the window itself (any firmware): the default is mode 1, mode 0 is the shipped engine's, and they differ only in the bytes after the app area
+    for (const id of ["felucca", "dx747", "clatter", "smileyface"]) {
+      const pkg = catalogPackage(id), def = xipWindow(u, pkg), m0 = xipWindow(mode0, pkg), m1 = xipWindow(mode1, pkg), ship = xipWindow(engine, pkg);
+      assert.equal(differing(def, m1).length, 0, `${id}: the default window is mode 1's`);
+      assert.equal(differing(m0, ship).length, 0, `${id}: mode 0's window is the shipped engine's`);
+      const d = differing(def, m0);
+      assert.ok(d.length > 0, `${id}: the default decrypts bytes the shipped engine leaves`);
+      assert.ok(d.at(-1) === def.length - 1 || d.at(-1) >= def.length - 0x1000, `${id}: only the end of the window`);
+    }
+    // behaviour: dx747 and clatter write a different 33-byte record (the first sector after their image) when the tail is decrypted; screen/audio comparisons are in docs/dev/ARCHITECTURE.md
+    for (const [id, sector] of [["dx747", 0x72000], ["clatter", 0x73000]]) {
+      const run = (e) => { const m = Fm1Machine.boot(e, catalogPackage(id), { usb: false }); m.run(2000); return { hash: m.flashHash(), flash: new Uint8Array(m.x.memory.buffer, m.x.fm1_flash(), m.x.fm1_flash_len()).slice() }; };
+      const ship = run(engine), def = run(u), m0 = run(mode0), m1 = run(mode1);
+      assert.equal(m0.hash, ship.hash, `${id}: mode 0 = the shipped engine`);
+      assert.equal(def.hash, m1.hash, `${id}: the default = mode 1`);
+      assert.notEqual(def.hash, ship.hash, `${id}: a firmware that reads the tail writes a different record`);
+      const d = differing(def.flash, ship.flash);
+      assert.equal(d.length, 33, `${id}: the records differ in 33 bytes`);
+      assert.ok(d[0] >= sector && d.at(-1) < sector + 0x1000, `${id}: inside the sector after its image`);
+    }
+    for (const id of ["felucca", "picovave"]) sameObs(obsOf(mode0, id, { usb: false }), obsOf(u, id, { usb: false }), `${id}: a firmware that does not read the tail does not notice`);
+  });
+
+  test("unified engine: the official stock FM-1.fwsc (not bundled; runs where the file is) boots and starts its audio engine with the default decrypted tail, and does not with the tail left as stored", async () => {
+    const path = stockPath();
+    if (!existsSync(path)) { console.log(`      (SKIPPED: no stock firmware at ${path}; set FM1_STOCK_FWSC)`); return; }
+    const pkg = new Uint8Array(readFileSync(path));
+    assert.equal(sha(pkg), STOCK_FWSC_SHA256, "the stock firmware the validation used");
+    const u = await U();
+    assert.ok(realFramesOf(u, pkg, "stock", 344) > 0, "default (decrypted tail): audio frames are produced");
+    assert.equal(realFramesOf(tailMode(u, 0), pkg, "stock", 344), 0, "tail left as stored: the firmware never starts its audio engine");
   });
 
   test("unified engine: a chip profile selected on it takes effect (quadro-fm1 saves its settings on Puya, not on UC25HQ80; WIP exists) and the default stays the original model", async () => {
@@ -201,14 +237,14 @@ export function registerUnifiedAppTests(test) {
   test("application chip test modes (ci/chip-mode-tests.mjs --full): the page's own comparison code on the real shipped and unified engines, the saving rules, the report", () => {
     const r = spawnSync(process.execPath, [resolve(ROOT, "ci/chip-mode-tests.mjs"), "--full"], { encoding: "utf8", timeout: 300_000 });
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-    assert.match(r.stdout, /PASS: 18 chip mode tests \(full\)/);
+    assert.match(r.stdout, /PASS: 36 chip mode tests \(full\)/);
   });
 }
 
 export function registerUnifiedLiveTests(testChip, { chipEngine }) {
-  testChip("unified engine == the pinned chip-profile engine under both chip profiles, USB off (2 firmware, 2 s, interpreter; the unified engine in XIP-tail mode 1, which is v0.3.0's)", async () => {
+  testChip("unified engine == the pinned chip-profile engine under both chip profiles, USB off (2 firmware, 2 s, interpreter; the unified engine with its default XIP tail, which is v0.3.0's)", async () => {
     const u = await loadEngine({ wasmPath: UNIFIED_WASM, name: "fm1_web_unified.wasm" });
-    const mode1 = { ...u, instantiate: () => { const x = u.instantiate(); x.fm1_xip_tail(1); return x; } };
+    const mode1 = u;
     for (const id of ["felucca", "quadro-fm1"]) {
       for (const cfg of [{ flashChip: "puya", flashTiming: "typical" }, { flashChip: "uc25hq80", flashTiming: "maximum" }]) {
         sameObs(obsOf(chipEngine, id, { seconds: 2, usb: false, ...cfg }), obsOf(mode1, id, { seconds: 2, usb: false, ...cfg }), `${id} ${cfg.flashChip}`);

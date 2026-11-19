@@ -1,5 +1,5 @@
 // The comparison off the page's thread (chiptest.js): compiles the two engines and runs chipcompare.js's runComparison. No storage, no audio device.
-import { runComparison } from "./chipcompare.js?v=2";
+import { runComparison } from "./chipcompare.js?v=14";
 
 self.onmessage = async (e) => {
   const m = e.data;

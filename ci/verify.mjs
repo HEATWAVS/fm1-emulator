@@ -220,7 +220,7 @@ assert.ok(existsSync(resolve(emulator, "session-play.js")), "session-play module
 const chipModeTests = spawnSync(process.execPath, [resolve(root, "ci/chip-mode-tests.mjs")], { encoding: "utf8" });
 assert.equal(chipModeTests.status, 0, `chip mode unit tests failed:\n${chipModeTests.stdout}\n${chipModeTests.stderr}`);
 assert.match(chipModeTests.stdout, /PASS: \d+ chip mode tests/, "chip mode unit tests report a pass count");
-for (const f of ["chipmode.js", "chipcompare.js", "chiptest.js", "chipcompare-worker.js", "fm1_web_unified.wasm", "pll0-firmware.json"]) assert.ok(existsSync(resolve(emulator, f)), `${f} is shipped`);
+for (const f of ["chipmode.js", "chipcompare.js", "chiptest.js", "compat.js", "chipcompare-worker.js", "fm1_web_unified.wasm", "fm1_web_frodhes_optimized.wasm", "pll0-firmware.json"]) assert.ok(existsSync(resolve(emulator, f)), `${f} is shipped`);
 
 // Headless machine harness, quick tier (ci/machine/selftest.mjs --quick): boots real firmware on the
 // emulated CPU and checks the flash and flash-ID safety logic. Hard limit so a stuck emulation can never

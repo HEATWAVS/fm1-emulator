@@ -89,7 +89,7 @@ with a clock the test controls. Do not use them while the machine is rendering.
 (`fm1_usb_plug`, `fm1_usb_conf`, `fm1_usb_conf_len`, `fm1_has_usr`), a USB audio-in host (`fm1_audio_in`, `fm1_audio_in_buf`, `fm1_audio_pending`,
 `fm1_has_audio_in`) and `fm1_xip_tail` (the switch below). It is the engine the application uses for its chip-test modes; the shipped
 `site/emulator/fm1_web.wasm` stays the Default. Its pin is `pin.json` `unified`; its binary is **committed** as `site/emulator/fm1_web_unified.wasm`
-(sha256 `ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b`, 2,747,410 bytes, rustc 1.97.1 on Windows: the one toolchain verified; Stage 2's was `58bacde6…`, 2,746,487 bytes, before the PLL0 boot state below), so the
+(sha256 `5d595ae778bf8cf7c698c463ff175efa0a08313d1272efd30db7b34d3d74e0c8`, 2,747,410 bytes, rustc 1.97.1 on Windows: the one toolchain verified; Stage 2's was `58bacde6…`, 2,746,487 bytes, before the PLL0 boot state below), so the
 tests and the app never need a build. The build needs a clone of the **whole** upstream repository (it reads commit `9acb2df`; a shallow clone is refused).
 
 How it is made: the pinned v0.3.0 tree with `chip-profiles.patch`, then `usb.rs` replaced **whole** by upstream commit
@@ -104,19 +104,29 @@ Stage 2's scratch rebuild gate: the Stage 1 validated binary (built with the v0.
 `Soc::new` sets PLL0's two control words as a bootloader leaves them, taken verbatim from upstream fm1-emu commit `d2bcc331d039855060dcef78c3bcaebb193b213a` (2026-11-07, first in v0.5.0): `PLL0_CON0` = `0x119a0` := `0x4540_0203`, `PLL0_CON1` = `0x119a4` := `0x3f50_3026`, set in that order at the end of `Soc::new` with `sfr_set`; they stay plain registers. Nothing else of v0.4.0 or later is used. **The shipped Default engine is unchanged and starts every analog register at 0, so the unified engine deliberately differs from it for firmware that checks PLL0** (the application lists them by package hash in `site/emulator/pll0-firmware.json`, audited by `node ci/pll0-audit.mjs --check`) (felucca-bsp's audio driver does, before it starts ALNK0): `amb`, `amenity`, `assid`, `atek303`, `choppah`, `ctl`, `fm1-ripple`, `fmfam`, `krisjangle`, `loom`, `midimon`, `mutable`, `polly`, `remotefm1`, `sidou` of the 277 bundled packages start their audio here and not on Default. Upstream attributes the values to reads off FM-1s (felucca-bsp `chip/fm1_clock.h`); **this project has not verified them on hardware.**
 
 ### XIP-tail switch (`fm1_xip_tail(mode)`, before a boot)
-Mode 0 (the default) leaves the bytes after the app area as stored, as the shipped engine does; mode 1 decrypts them up to the protected image's end, as
-upstream v0.3.0 and its newer versions do. Resolved in Stage 1: the 3,488-byte difference (below) is exactly this. Mode 0 gives decoded XIP windows identical to the
-shipped engine's on 277 of 277 packages; mode 1 gives XIP and flash identical to a plain v0.3.0 build on 277 of 277. Which one matches real hardware is **not known**.
+**Mode 1 is the default** (changed 2026-11-18, D108): the bytes after the app area are decrypted up to the protected image's end, as upstream v0.3.0 and its newer versions do. Mode 0 leaves them as stored, as the shipped engine does (and as this engine did before D108).
+The 3,488-byte difference (below) is exactly this. Mode 0 gives decoded XIP windows identical to the shipped engine's on 277 of 277 packages; mode 1 gives XIP and flash identical to a plain v0.3.0 build on 277 of 277.
+Why the default changed: the official stock FM-1.fwsc keeps a small encrypted table entry (an `EXT_RESERVED` marker) there and does not start its audio engine without it decoded (it never leaves an idle state on the shipped engine or on this engine in mode 0); firmware that does not read the region are unaffected, and the two in the catalogue that do (`dx747`, `clatter`) write a different 33-byte flash record and show small audio differences (docs/dev/ARCHITECTURE.md). Which of the two matches real hardware for those two is **not known**; the stock firmware's boot is evidence for decoding the entry, not for the erased bytes after it.
+
+## The optimized unified engine (settled-loop early exit; the engine of Default since D109)
+`node ci/engine/build.mjs --optimized` (implies `--unified`) also builds **`fm1_web_frodhes_optimized.wasm`**: the unified engine plus `settled-loop.patch`, which gives core 1 an
+early exit for a loop it provably cannot leave (`fm1_soc::machine::Settled1`): when core 1 is back at a pc with the same complete core state, clock and TIMER4 poll-detector state as
+earlier in the same call, one round is single-stepped through the bus, and the remaining whole rounds are skipped only if that round changed nothing observable (no store, no read that is
+not free of side effects, no clock move, no hardware lock, no interrupt core 1 could take). An adaptive hold-off stops the looking for up to 255 calls after calls that skipped nothing although core 1 did something observable
+or the lookups were paid for and found no loop, and resumes by itself; the proof alone authorises a skip. This is **v5**; it supersedes v4 (patch `f0c787c8...`, wasm `a0dacf3f...`), whose hold-off counted only calls in which core 1 did something observable and so paid for the lookups forever on a core that computes with registers that never repeat (1.4 to 3.7 times slower on five bundled packages). v4's files and the evidence are kept in `audio-audit/unified-settled-loop-adaptive/v4-superseded/` and `audio-audit/stage2-validation/` (outside this repository). The switch is **off in every new boot**; a front end calls `fm1_settled_loop(1)` after a boot
+(`fm1_settled_loop_stat(i)` reads the counters). The patch touches `fm1-soc/src/{machine.rs,periph.rs,lib.rs}` and `fm1-web/src/lib.rs` only, and applies to the tree `--unified` makes.
+Its pin is `pin.json` `frodhesOptimized`; the binary is committed as `site/emulator/fm1_web_frodhes_optimized.wasm` and is **the engine Default runs** (D109): the page switches the early exit on after every boot of Default (`applyCpuOptimization` in `chipmode.js`, called by `worklet.js`). The shipped and the
+unified engines are never read or written by this step. Evidence and measurements: the scratch reports of 2026-11-17 (outside this repository).
 
 ## Known limitations
 - **No USB host in this (chip-profile) engine.** Upstream v0.3.0 has no `fm1_usb_plug` (a fork addition), so `usb: true` has no effect here; compare against
   the shipped engine only with `usb: false`. The **unified engine** has the host.
 - **XIP-tail difference (explained in Stage 1).** This v0.3.0-based engine and the shipped engine differ in 3,488 of the 585,728 bytes of the
   decoded XIP window, at flash offsets `0x9225B-0x93000`: the shipped engine leaves the bytes after the app area as stored (erased `0xFF`), v0.3.0 decrypts
-  them. The unified engine's `fm1_xip_tail` selects either.
+  them. The unified engine's `fm1_xip_tail` selects either (its default is the decrypting one, like this engine).
 - Not proof of equivalence with the fork: see `docs/dev/TESTING.md` for exactly what was compared.
 - The Rust crate's transcript tests are `#[ignore]` unless `FM1_CHIP_ORACLE` names a transcript (`gen-transcripts.mjs`); `build.mjs --test` does this for you.
 
 ## Files
-`build.mjs` build and verify | `verify.mjs` pin checks | `pin.json` pins | `chip-profiles.patch` | `unified-engine.patch` (the unified engine) | `tables.mjs`/`gen-tables.mjs` table generator |
+`build.mjs` build and verify | `verify.mjs` pin checks | `pin.json` pins | `chip-profiles.patch` | `unified-engine.patch` (the unified engine) | `settled-loop.patch` (the optimized engine) | `tables.mjs`/`gen-tables.mjs` table generator |
 `gen-transcripts.mjs` deterministic oracle transcripts from the Stage A model (about 4.7 MB, 145,587 lines; generated, not committed).

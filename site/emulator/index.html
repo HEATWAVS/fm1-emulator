@@ -18,7 +18,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap">
-<link rel="stylesheet" href="style.css?v=105">
+<link rel="stylesheet" href="style.css?v=116">
 <script src="ui-theme.js?v=4"></script>
 <script>if (new URLSearchParams(location.search).get("embed") === "1") document.documentElement.setAttribute("data-embed", "");</script>
 <script>try { if (sessionStorage.getItem("fm1.audio") === "1") document.documentElement.classList.add("fm1-session"); } catch {}</script>
@@ -29,6 +29,7 @@
   <div class="wrap">
     <a class="brand" href="./" title="FM-1 Emulator"><img class="logo worker-mark" src="worker-icon.png?v=2" alt="Worker" width="22" height="22"><span class="brand-name">FM-1</span></a>
     <nav class="sitenav" aria-label="Site" id="site-menu-host"></nav>
+    <button type="button" id="test-badge" class="test-badge" hidden title="A test mode is running: nothing is saved. Open the compatibility panel.">TEST MODE: nothing is saved</button>
     <details class="site-more">
       <summary>More</summary>
       <div class="site-more-menu">
@@ -49,7 +50,7 @@
         <h2 class="eyebrow" id="h-now">Now running</h2>
         <p id="about"></p>
         <label id="fwlabel">Firmware <select id="fw" aria-label="Firmware"></select></label>
-        <label>Clock <select id="mhz" aria-label="Emulated clock"></select></label>
+        <label>CPU clock <select id="mhz" aria-label="Emulated CPU clock"></select></label>
         <label title="A bigger buffer stops sound dropouts on slow devices; it adds a little delay to the keys">Audio buffer <select id="buf" aria-label="Audio buffer size"><option value="interactive">Low (snappy)</option><option value="playback">Large</option><option value="0.3">Largest</option></select></label>
         <div class="row">
           <label class="file">Open .fwsc… <input type="file" id="open"></label>
@@ -57,43 +58,37 @@
           <span id="bankname" class="dim"></span>
         </div>
       </section>
-      <section class="box chip-box" aria-labelledby="h-chip">
-        <h2 class="eyebrow" id="h-chip">Flash chip test</h2>
-        <label>Emulation <select id="chipmode" aria-label="Emulation mode"></select></label>
-        <label id="chiptiming-row" hidden>Chip timing <select id="chiptiming" aria-label="Flash chip cycle times"></select></label>
-        <p id="chipnote" class="dim"></p>
-        <p id="chip-notice" class="chip-notice" role="note" hidden></p>
-        <div class="row">
-          <button type="button" id="chip-copy" title="Copy a plain-text report of this session: the firmware, the engine and flash chip mode, the chip's counters and flash changes, and the last comparison">Copy report</button>
-          <button type="button" id="chip-compare" title="Run this firmware for a few seconds on the original engine and on both flash chip profiles and list what differs">Compare chips…</button>
-        </div>
-        <span id="chip-status" role="status" aria-live="polite" class="dim"></span>
-        <details id="chip-report-wrap" hidden open><summary>Report</summary><pre id="chip-report" tabindex="0"></pre></details>
-        <p class="dim chip-fine">Reference profiles built from the chips' datasheets. Not confirmed to match a physical FM-1's chip; a report is emulator output, not a hardware measurement.</p>
-      </section>
-      <section class="box update-box" aria-labelledby="h-radar">
-        <div class="update-heading">
-          <span class="update-radar" aria-hidden="true"><i></i></span>
-          <div><h2 class="eyebrow" id="h-radar">Firmware radar</h2><strong>Open-source live scan</strong></div>
-        </div>
-        <p>Finds open-source firmwares that are <b>new</b> or <b>updates</b> — never ones already in this build or already added. Closed licenses are skipped. Nothing downloads until you run a firmware.</p>
-        <div class="radar-meta" id="firmware-radar-meta" hidden></div>
-        <div class="radar-actions">
-          <button type="button" id="firmware-radar-scan" disabled>Scan for new</button>
-          <button type="button" id="firmware-radar-updates" disabled>Check for updates</button>
-          <button type="button" id="firmware-radar-apply" class="primary" hidden>Add selected</button>
-          <button type="button" id="firmware-radar-discard" class="quiet" hidden>Discard scan</button>
-          <button type="button" id="firmware-radar-reset" class="quiet" hidden>Clear finds</button>
-        </div>
-        <span id="firmware-radar-status" role="status" aria-live="polite"></span>
-        <div class="radar-filters" id="firmware-radar-filters" hidden>
-          <input type="search" id="radar-filter-q" placeholder="Filter finds…" autocomplete="off" aria-label="Filter scan results">
-          <label><input type="checkbox" id="radar-filter-new" checked> New</label>
-          <label><input type="checkbox" id="radar-filter-upd" checked> Updates</label>
-          <button type="button" id="radar-select-all" class="quiet">All</button>
-          <button type="button" id="radar-select-none" class="quiet">None</button>
-        </div>
-        <ul class="radar-list" id="firmware-radar-list" hidden aria-label="Scan results"></ul>
+      <section class="box chip-box" id="chip-box" aria-labelledby="h-chip">
+          <h2 class="chip-h" id="h-chip">Flash chip</h2>
+          <p class="dim chip-small chip-lead" id="chip-lead">Tests the firmware loaded in Now running.</p>
+          <select id="chipmode" aria-label="Emulation mode" hidden></select>
+          <div class="chip-seg" id="chip-seg" role="radiogroup" aria-label="Flash chip"></div>
+          <p class="chip-effect" id="chipnote"></p>
+          <span id="chip-status" role="status" aria-live="polite" class="dim"></span>
+          <p id="chip-notice" class="chip-notice" role="note" hidden></p>
+          <div id="chip-timing-wrap" hidden>
+            <label id="chiptiming-row">Chip timing <select id="chiptiming" aria-label="Flash chip cycle times"></select></label>
+            <p class="dim chip-small">Timing here comes from the datasheet. Use maximum to test a slow chip.</p>
+          </div>
+          <div class="chip-warning" id="chip-warning" role="note">
+            <strong>This shows whether a firmware should work with the selected flash chip. It can't confirm that it will.</strong>
+            <span>The chip models are built from datasheets and haven't been verified on a physical FM-1. The chip tests run without a bootloader (a real unit has one, and it may change how saving works), real chip timing may differ, and Compare chips presses no keys or buttons. Only a test on a real unit can confirm how a firmware behaves.</span>
+          </div>
+          <h4 class="chip-s2">Not sure which chip your unit has?</h4>
+          <p class="dim chip-unit" id="chip-unit">Read its chip ID with a tool such as M-Flasher and match it to the results: older chip 85 60 14, newer chip B3 60 14. We can't vouch for any tool, and a unit's logo or date doesn't reliably tell the chip. The chip test never connects to a unit or writes to one.</p>
+          <h4 class="chip-s2">Compare chips</h4>
+          <div class="row">
+            <button type="button" id="chip-compare" title="Run this firmware for a few seconds on both flash chip models and say whether it behaved the same on each">Compare both chips</button>
+          </div>
+          <div id="chip-verdict" class="chip-verdict" role="status" aria-live="polite" data-empty="true"><p class="chip-vempty">The verdict appears here after you compare the chips.</p></div>
+          <div class="row">
+            <button type="button" id="chip-copy" title="Copy the comparison report as plain text" disabled>Copy report</button>
+          </div>
+          <details id="chip-report-wrap" open><summary>Report</summary><span id="chip-cmp-status" role="status" aria-live="polite" class="dim"></span><pre id="chip-report" tabindex="0">The report appears here after you compare the chips.</pre></details>
+          <h4 class="chip-s2">What Compare chips checks</h4>
+          <p class="dim chip-what" id="chip-what">It runs the firmware for 3 seconds with nothing pressed on the older and newer chip models (at the Chip timing you chose, typical by default), and checks whether it started, showed a screen, started its audio and wrote to flash. Two extra runs without a chip model show whether a difference comes from the emulator rather than the chip.</p>
+          <p class="dim chip-what" id="chip-what-code">It also scans the firmware's code for the two chips' IDs. If the newer chip's ID is there, the firmware may support newer units; only a test on a real unit can confirm.</p>
+          <p class="dim chip-what" id="chip-what-limits">It doesn't test longer than 3 seconds or the chip ID on its own, so a firmware that only writes to flash after you press something may show no difference.</p>
       </section>
     </aside>
     <div class="deck">
@@ -160,6 +155,31 @@
         <p id="midi-identity" class="dim midi-note" hidden></p>
         <p id="midi-fx-warn" class="dim midi-note" hidden></p>
         <p id="midi-ble-hint" class="dim midi-hint" title="MIDI stays off until you pick a port. Keep MIDI connected is off by default so flashing is not blocked. Mic stays off until Tape → Mic → Feed and you confirm.">Pick ports to play · keep off for USB flash</p>
+      </section>
+
+      <section class="box update-box" aria-labelledby="h-radar">
+        <div class="update-heading">
+          <span class="update-radar" aria-hidden="true"><i></i></span>
+          <div><h2 class="eyebrow" id="h-radar">Firmware radar</h2><strong>Open-source live scan</strong></div>
+        </div>
+        <p>Finds open-source firmwares that are <b>new</b> or <b>updates</b> — never ones already in this build or already added. Closed licenses are skipped. Nothing downloads until you run a firmware.</p>
+        <div class="radar-meta" id="firmware-radar-meta" hidden></div>
+        <div class="radar-actions">
+          <button type="button" id="firmware-radar-scan" disabled>Scan for new</button>
+          <button type="button" id="firmware-radar-updates" disabled>Check for updates</button>
+          <button type="button" id="firmware-radar-apply" class="primary" hidden>Add selected</button>
+          <button type="button" id="firmware-radar-discard" class="quiet" hidden>Discard scan</button>
+          <button type="button" id="firmware-radar-reset" class="quiet" hidden>Clear finds</button>
+        </div>
+        <span id="firmware-radar-status" role="status" aria-live="polite"></span>
+        <div class="radar-filters" id="firmware-radar-filters" hidden>
+          <input type="search" id="radar-filter-q" placeholder="Filter finds…" autocomplete="off" aria-label="Filter scan results">
+          <label><input type="checkbox" id="radar-filter-new" checked> New</label>
+          <label><input type="checkbox" id="radar-filter-upd" checked> Updates</label>
+          <button type="button" id="radar-select-all" class="quiet">All</button>
+          <button type="button" id="radar-select-none" class="quiet">None</button>
+        </div>
+        <ul class="radar-list" id="firmware-radar-list" hidden aria-label="Scan results"></ul>
       </section>
     </aside>
   </div>
@@ -467,11 +487,12 @@
 <script src="banks.js?v=66"></script>
 <script src="stickers.js?v=84"></script>
 <script src="toolgroup.js?v=10"></script>
+<script src="compat.js?v=5"></script>
 <script src="rack-gens.js?v=6"></script>
-<script src="deck.js?v=118"></script>
+<script src="deck.js?v=119"></script>
 <script src="loader.js?v=2"></script>
-<script type="module" src="main.js?v=117"></script>
-<script type="module" src="install.js?v=101"></script>
-<script type="module" src="layout.js?v=3"></script>
+<script type="module" src="main.js?v=132"></script>
+<script type="module" src="install.js?v=102"></script>
+<script type="module" src="layout.js?v=5"></script>
 </body>
 </html>

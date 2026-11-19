@@ -6,10 +6,10 @@ index 5b49b81..46fb697 100644
  //! which updates leave alone: real units carry the factory bank there. `usr_fill_defaults`
  //! puts this emulator's own small bank into a blank one, `usr_load_syx` a DX7 32-voice bank.
  
-+/// Unified-engine option (Stage 1): 0 (default) leaves the bytes after the app area as stored, as the
-+/// shipped engine does; 1 decrypts them up to the protected image's end, as upstream v0.3.0 does.
++/// Unified-engine option. The default is 1 (decrypt): the bytes after the app area are decrypted up to the
++/// protected image's end, as upstream v0.3.0 does; 0 leaves them as stored, as the shipped engine does.
 +/// Set with fm1_xip_tail before a boot.
-+pub static XIP_TAIL_DECRYPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++pub static XIP_TAIL_DECRYPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 +
  pub(crate) fn unmask(buf: &mut [u8], mut key: u16) {
      for b in buf {
@@ -244,7 +244,7 @@ index c505c18..e0ef0eb 100644
 +#[no_mangle]
 +pub extern "C" fn fm1_has_audio_in() -> u32 { machine().is_some_and(|m| m.soc.usb.has_audio()) as u32 }
 +
-+/// XIP tail mode for the next boot: 0 as the shipped engine (default), 1 as upstream v0.3.0.
++/// XIP tail mode for the next boot: 1 (the default) as upstream v0.3.0, 0 as the shipped engine.
 +#[no_mangle]
 +pub extern "C" fn fm1_xip_tail(mode: u32) { fm1_soc::fwsc::XIP_TAIL_DECRYPT.store(mode != 0, std::sync::atomic::Ordering::Relaxed); }
 +

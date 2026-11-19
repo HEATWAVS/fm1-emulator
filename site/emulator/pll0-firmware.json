@@ -1,7 +1,7 @@
 {
   "note": "Bundled packages whose audio engine starts on the unified engine (PLL0 boot state, upstream fm1-emu d2bcc33) and never starts on the shipped Default engine. Matched by package SHA-256 only, never by name. Evidence-based like ci/boot-quarantine.json: verify or regenerate with node ci/pll0-audit.mjs --check / --write. Starting the audio engine is not the same as producing audible sound.",
   "audited": "2026-11-16",
-  "unifiedEngineSha256": "ba1ba889045a847e5ec7c18d739fd211d840c35eea6e0433e93481157f13153b",
+  "unifiedEngineSha256": "5d595ae778bf8cf7c698c463ff175efa0a08313d1272efd30db7b34d3d74e0c8",
   "measure": "frames fm1_render reports as real audio, summed over 690 renders of 128 frames (88320 requested, 2 s of audio time); interpreter, USB plugged, original flash model, 100 MHz; shippedRealFrames and unifiedRealFrames are those sums",
   "packagesAudited": 277,
   "requestedFrames": 88320,

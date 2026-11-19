@@ -116,6 +116,18 @@ the exact hashes in [FIRMWARE-SOURCES.json](FIRMWARE-SOURCES.json). Packages wit
 unverifiable licensing, restricted media, a wrong-device identity, or a failed boot check stay out.
 The M-VAVE stock firmware is not bundled; load your own `.fwsc` to run it.
 
+## Emulation engine and known limitations
+
+The emulator runs firmware on one engine: the unified engine (upstream fm1-emu v0.3.0 plus this project's patches) with a validated CPU optimization that skips loops the second CPU core provably cannot leave. Firmware runs unmodified and, across all 277 bundled packages, behaves identically with the optimization on and off. The original engine file stays in the app only to draw the front panel and as a *Previous engine* reference mode in the Flash chip test panel (test modes never save).
+
+Known limitations (details in `docs/dev/ARCHITECTURE.md`):
+
+- **15 firmware packages** (`amb`, `amenity`, `assid`, `atek303`, `choppah`, `ctl`, `fm1-ripple`, `fmfam`, `krisjangle`, `loom`, `midimon`, `mutable`, `polly`, `remotefm1`, `sidou`) start their audio engine now; on the previous engine they never did. The audio-clock (PLL0) values behind this come from the upstream emulator and have **not** been verified on a physical FM-1.
+- **Six firmware packages** (`xenolith`, `fm1-mighty-arp`, `tonic-fm1`, `fm1-yoga`, `tidepool-fm1`, `matryoshka`) behave differently from the previous engine when USB audio is streamed to them (the previous engine disturbed firmware that ignores the stream; the new one does not). Not checked against hardware.
+- **`dx747` and `clatter`** write a different 33-byte flash record and show small audio differences from the previous engine, because the new engine decrypts the bytes after the app area (as upstream does). Which one a physical FM-1 shows is not known.
+- **The official stock `FM-1.fwsc`** (not bundled) now boots, but its sound generation and its complete screen/UI have **not** been verified; in the checks it drew only a status bar and produced silent audio, and it ran at about 0.1x real time (so it is not usable interactively yet).
+- **Not tested:** listening on a real audio device, the packaged Electron application, and anything on physical hardware.
+
 ## Build from source
 
 Requires [Node.js](https://nodejs.org) 18+.

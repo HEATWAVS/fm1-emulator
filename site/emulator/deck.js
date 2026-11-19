@@ -962,7 +962,11 @@
         // measure the width the deck naturally gets (its flex share, beside the sidebar or full-width
         // when the sidebar stacks), by briefly dropping the fixed width + zoom, then scale to fit it.
         deck.style.width = ""; deck.style.flex = ""; deck.style.zoom = ""; bay.style.maxWidth = "";
-        const avail = deck.clientWidth || RIG_W;
+        // Leave a little room (FIT_SLACK px) so the three columns never fit to the last pixel: a vertical scrollbar that appears
+        // after the fit, a fractional pixel (a 125% display scale) or a wider left column would otherwise push the right
+        // column (Install firmware) onto a second row, under the left sidebar.
+        const FIT_SLACK = 24;
+        const avail = Math.max(RIG_W * 0.4, (deck.clientWidth || RIG_W) - FIT_SLACK);
         const top = deck.getBoundingClientRect().top + scrollY;   // the page above the deck, in its own place in the row
         // scale the rig UP to fill the space it's given (capped so the upscaled panel doesn't get soft),
         // not just down — so the machine grows to fill a wide center column instead of sitting native-size.

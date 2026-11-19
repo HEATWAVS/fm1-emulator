@@ -1,5 +1,5 @@
 import { applyPackageResources } from './package-resources.js?v=1';
-import { applyChipProfile, chipStatus } from './chipmode.js?v=2';
+import { applyChipProfile, applyCpuOptimization, chipStatus } from './chipmode.js?v=14';
 // The emulator in the audio thread: each 128-frame quantum runs the machine until its I2S
 // DMA has produced 128 frames, so the audio device paces the emulation; and also, for an even
 // amount of work per quantum, its share of emulated time while the queue holds less than one
@@ -111,7 +111,7 @@ class Fm1 extends AudioWorkletProcessor {
     // the module arrives as bytes: a compiled WebAssembly.Module does not cross into the
     // AudioWorklet's scope (Chrome delivers it as a messageerror). Compiled once, here: on a
     // phone compiling it again on every firmware change takes a noticeable while
-    // (compiled once per engine: the page boots the shipped engine or the unified one (m.engineId), and a firmware change keeps whichever it asked for)
+    // (compiled once per engine: the page boots the optimized unified engine (Default), the unified one or the previous shipped one (m.engineId), and a firmware change keeps whichever it asked for)
     const engineId = m.engineId || "shipped";
     if (!this.module || this.moduleId !== engineId) { this.module = await WebAssembly.compile(m.wasm); this.moduleId = engineId; }
     let x;
@@ -150,6 +150,8 @@ class Fm1 extends AudioWorkletProcessor {
       if (x.fm1_board() !== 0) throw new Error("flash chip test modes are for the FM-1 board; use Default for this firmware");
       chipInfo = applyChipProfile(x, m.chip, m.chipTiming || "typical");
     }
+    // the CPU optimization (a mode's `settledLoop`, Default's; the optimized engine only): off in every new boot, switched on here and only here
+    applyCpuOptimization(x, m.settledLoop === true);
     this.x = x;                         // (a reboot replaces the whole instance)
     this.mhz = m.mhz;
     this.ahead = ahead;

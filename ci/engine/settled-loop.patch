@@ -1,0 +1,728 @@
+diff --git a/crates/fm1-soc/src/lib.rs b/crates/fm1-soc/src/lib.rs
+index 6d1f868..dec785f 100644
+--- a/crates/fm1-soc/src/lib.rs
++++ b/crates/fm1-soc/src/lib.rs
+@@ -250,6 +250,8 @@ pub struct Soc {
+     pub usb: usb::Usb,
+     /// Exact skipping of cpu0's polling loops (`machine::run_blocks`).
+     pub loop_skip: machine::LoopSkip,
++    /// The settled-loop early exit of core 1: off unless a front end turns it on (`machine::Settled1`).
++    pub c1_settled: machine::Settled1,
+ }
+ 
+ fn dbg_line(addr: u32) -> &'static str {
+@@ -441,6 +443,7 @@ impl Soc {
+             usb: Default::default(),
+             // (FM1_TRACE: a trace shows every instruction as it runs, not a probe's)
+             loop_skip: machine::LoopSkip::new(std::env::var_os("FM1_NO_LOOPSKIP").is_none() && std::env::var_os("FM1_TRACE").is_none()),
++            c1_settled: Default::default(),
+         };
+         // PLL0 as the bootloader leaves it, M-VAVE's and m-bootloader's alike (upstream d2bcc33: read off FM-1s, felucca-bsp chip/fm1_clock.h; not verified here).
+         // The BSP's audio driver (AMB-1 1.3.2, CTL-1 1.0.3, CHOPPAH 0.99, Polly 0.6.2) checks these before it starts ALNK0 and leaves the audio off under any other clock.
+diff --git a/crates/fm1-soc/src/machine.rs b/crates/fm1-soc/src/machine.rs
+index a518816..46745dd 100644
+--- a/crates/fm1-soc/src/machine.rs
++++ b/crates/fm1-soc/src/machine.rs
+@@ -18,32 +18,113 @@ pub const SLICE: u32 = 1024;
+ /// by `Soc::power_cut` (or by this text).
+ pub const POWER_CUT: &str = "power cut";
+ 
++/// The settled-loop early exit of core 1 (opt-in: off in a new `Soc`; the web build turns it on with `fm1_settled_loop`).
++///
++/// Core 1 has no clock and cpu0 does not run while it does, so a loop of core 1 that reads only things that cannot change and
++/// writes nothing goes round forever in the same state. When core 1 is back at a pc it was at earlier in the same call with the
++/// same core state, the same clock and the same TIMER4 poll-detector state, one round is single-stepped through the bus
++/// (`prove_round`), which sees every store, every read that is not free of side effects, every clock jump and every hardware
++/// lock. Only if that round ends in the identical state having changed nothing, with no interrupt core 1 could take, are the
++/// remaining whole rounds skipped: their instructions are counted as run and the poll detector is advanced by the reads it
++/// would have counted. Everything else runs as it always did. Nothing is remembered between calls.
++#[derive(Default)]
++pub struct Settled1 {
++    /// the switch
++    pub on: bool,
++    /// bumped by every core-1 access that is not provably free of side effects
++    epoch: u64,
++    /// TIMER4 reads core 1 made that the poll detector counts
++    t4_reads: u64,
++    /// the visits of the current call (a buffer kept between calls, so a call allocates nothing)
++    visits: Vec<Settled1Visit>,
++    /// Adaptive hold-off: calls still to run without looking for loops, and how many calls in a row that did observable things and found no loop (the hold grows with it)
++    hold: u32,
++    miss: u32,
++    /// calls that ran without looking, because of the hold-off (diagnostics)
++    pub held: u64,
++    /// calls that skipped, rounds skipped, instructions skipped, proofs run, proofs that failed (diagnostics)
++    pub exits: u64,
++    pub rounds: u64,
++    pub skipped: u64,
++    pub proofs: u64,
++    pub failed: u64,
++}
++
++/// Most visits remembered in a call, quiet block ends before the first is recorded, instructions one proof may step, block ends a failed proof waits.
++const SETTLED_RING: usize = 16;
++const SETTLED_ARM: u32 = 4;
++const SETTLED_PROOF_MAX: u64 = 1024;
++const SETTLED_BACKOFF: u32 = 32;
++/// A call that skipped nothing although core 1 did something observable or the lookups were paid for makes the next 2^n - 1 calls (n counts such calls in a row, at most `SETTLED_MISS_MAX`, so at most 255) run without any bookkeeping; a skip resets n.
++const SETTLED_MISS_MAX: u32 = 8;
++/// TIMER4's counter word (periph.rs): a read of it counts the clock.
++const TIMER4_CNT: u32 = 0x10804;
++
+ /// cpu1's view of the SoC: no clock, a budget of ticks instead.
+ pub struct Core1Bus<'a> {
+     pub soc: &'a mut Soc,
+     pub budget: u64,
+ }
+ 
++impl Core1Bus<'_> {
++    /// Something observable may have happened (`Settled1`).
++    #[inline]
++    fn bump(&mut self) {
++        self.soc.c1_settled.epoch = self.soc.c1_settled.epoch.wrapping_add(1);
++    }
++
++    /// After a core-1 load at `a`, with the clock as it was before it: was it free of side effects? (TIMER4's counter is, unless it moved the clock.)
++    #[inline]
++    fn note_read(&mut self, a: u32, cycles_before: u64) {
++        if !self.soc.c1_settled.on {
++            return;
++        }
++        if (a & !3) == TIMER4_CNT {
++            // the poll detector looks at a read only when skip_idle is on and cpu0 is not inside an interrupt handler: count exactly those
++            if self.soc.periph.skip_idle && !self.soc.periph.in_isr {
++                self.soc.c1_settled.t4_reads += 1;
++            }
++            if self.soc.periph.cycles != cycles_before {
++                self.bump();
++            }
++        } else if !self.soc.pure_read(a) {
++            self.bump();
++        }
++    }
++}
++
+ impl Bus for Core1Bus<'_> {
+     fn read8(&mut self, a: u32) -> u8 {
+-        self.soc.core1_read8(a)
++        let c = self.soc.periph.cycles;
++        let v = self.soc.core1_read8(a);
++        self.note_read(a, c);
++        v
+     }
+     fn read16(&mut self, a: u32) -> u16 {
+-        self.soc.core1_read16(a)
++        let c = self.soc.periph.cycles;
++        let v = self.soc.core1_read16(a);
++        self.note_read(a, c);
++        v
+     }
+     fn read32(&mut self, a: u32) -> u32 {
+-        self.soc.core1_read32(a)
++        let c = self.soc.periph.cycles;
++        let v = self.soc.core1_read32(a);
++        self.note_read(a, c);
++        v
+     }
+     fn fetch32(&mut self, a: u32) -> u32 {
+         self.soc.read32(a)
+     }
+     fn write8(&mut self, a: u32, v: u8) {
++        self.bump();
+         self.soc.write8(a, v)
+     }
+     fn write16(&mut self, a: u32, v: u16) {
++        self.bump();
+         self.soc.write16(a, v)
+     }
+     fn write32(&mut self, a: u32, v: u32) {
++        self.bump();
+         self.soc.write32(a, v)
+     }
+     fn tick(&mut self) -> bool {
+@@ -73,6 +154,7 @@ impl Bus for Core1Bus<'_> {
+         self.budget = self.budget.saturating_sub(n);
+     }
+     fn hw_lock(&mut self, core: u32, set: bool) -> bool {
++        self.bump();
+         self.soc.hw_lock(core, set)
+     }
+     fn irq_window(&mut self) {
+@@ -553,11 +635,25 @@ pub fn run_cpu1(c1: &mut Cpu, soc: &mut Soc, cycles: u64) -> Result<(), String>
+     // first a block at a time, looking for the way back to where it started (a polling loop
+     // goes round in well under this); then, busy, in big stretches
+     let mut probing = 512u64;
++    // the settled-loop early exit (`Settled1`): not for a flaky core 1, whose misreads come from a random stream that skipped rounds would not draw
++    let mut settle = soc.c1_settled.on && soc.flaky_core1.is_none();
++    if settle && soc.c1_settled.hold > 0 {
++        // a busy core was found not to be worth looking at: this call runs as it always did (one counter, nothing else)
++        soc.c1_settled.hold -= 1;
++        soc.c1_settled.held += 1;
++        settle = false;
++    }
++    let ep_start = soc.c1_settled.epoch;
++    let mut sc = Settled1Call { ep: ep_start, ..Default::default() };
++    if settle {
++        soc.c1_settled.visits.clear();
++    }
+     while left > 0 {
+         let irq = if soc.periph.any_pending() { soc.pending_irq_for(1) } else { None };
+         if let Some((irq, prio)) = irq {
+             if c1.irq_ready(prio) {
+                 let handler = soc.read32(VEC_BASE + 4 * irq as u32);
++                soc.c1_settled.epoch = soc.c1_settled.epoch.wrapping_add(1);
+                 c1.interrupt(handler, prio);
+             }
+         }
+@@ -598,10 +694,170 @@ pub fn run_cpu1(c1: &mut Cpu, soc: &mut Soc, cycles: u64) -> Result<(), String>
+         if c1.pc == probe.0 && c1.sp == probe.2 && c1.regs == probe.1 {
+             break; // polling with nothing to do
+         }
++        if settle && !sc.done {
++            settled_block_end(c1, soc, &mut sc, &mut left, &mut probing)?;
++        }
++    }
++    if settle {
++        // wasted: nothing was skipped, and either core 1 did something observable or the lookups were paid for and found no loop (a core computing with registers that never repeat does nothing observable, yet every lookup is wasted)
++        let wasted = !sc.done && (sc.looked || soc.c1_settled.epoch != ep_start);
++        settled_call_end(&mut soc.c1_settled, sc.done, wasted);
++    }
++    Ok(())
++}
++
++/// What a call that looked for loops teaches the hold-off: a skip proves looking pays (reset); a call that skipped nothing although it did something observable or paid for lookups makes the next calls skip the looking, for longer each time in a row.
++/// The looking resumes by itself when the hold runs out, so detection is never switched off for good. (Only the choice of where to look changes; `prove_round` still alone authorises a skip.)
++fn settled_call_end(s: &mut Settled1, done: bool, wasted: bool) {
++    if done {
++        s.miss = 0;
++    } else if wasted {
++        s.miss = (s.miss + 1).min(SETTLED_MISS_MAX);
++        s.hold = (1u32 << s.miss) - 1;
++    }
++}
++
++/// One visit of core 1 to a pc in a call: the core, the clock and the poll detector's state then.
++struct Settled1Visit {
++    core: PlainState,
++    cyc: u64,
++    poll: (u32, u64),
++}
++
++/// What one `run_cpu1` call remembers for `Settled1`.
++#[derive(Default)]
++struct Settled1Call {
++    /// the epoch at the last block end that was looked at, where the next visit goes in the ring, quiet block ends in a row, block ends a failed proof still waits
++    ep: u64,
++    pos: usize,
++    quiet: u32,
++    backoff: u32,
++    /// a skip was made: nothing more is tried in this call
++    done: bool,
++    /// the lookup (state copy, scan, record) was paid for at least once in this call
++    looked: bool,
++}
++
++/// The poll detector's state as far as it matters: whether three reads in a row have been seen, and how long since the last.
++fn settled_poll_key(soc: &Soc) -> (u32, u64) {
++    let (streak, last) = soc.periph.poll_state();
++    (streak.min(2), soc.periph.cycles.wrapping_sub(last).min(64))
++}
++
++/// What `run_cpu1` does after each of core 1's block ends when the early exit is on (`Settled1`). The filter below only chooses where to
++/// look; `prove_round` alone decides whether anything is skipped.
++#[inline(always)]
++fn settled_block_end(c1: &mut Cpu, soc: &mut Soc, sc: &mut Settled1Call, left: &mut u64, probing: &mut u64) -> Result<(), String> {
++    // Anything observable since the last block end: no settled round ended here. Forget the earlier visits and do nothing else.
++    let ep = soc.c1_settled.epoch;
++    if ep != sc.ep {
++        sc.ep = ep;
++        soc.c1_settled.visits.clear();
++        sc.pos = 0;
++        sc.quiet = 0;
++        sc.backoff = sc.backoff.saturating_sub(1);
++        return Ok(());
++    }
++    // Armed only after a few quiet block ends in a row: a core that does something observable every few blocks never gets here.
++    sc.quiet = sc.quiet.saturating_add(1);
++    if sc.quiet < SETTLED_ARM {
++        sc.backoff = sc.backoff.saturating_sub(1);
++        return Ok(());
++    }
++    settled_look(c1, soc, sc, left, probing)
++}
++
++/// The part of `settled_block_end` that is more than a counter compare: look for a repeat visit, prove it, remember this one. Kept out of line so the
++/// block loop of `run_cpu1` carries only the compare.
++#[inline(never)]
++fn settled_look(c1: &mut Cpu, soc: &mut Soc, sc: &mut Settled1Call, left: &mut u64, probing: &mut u64) -> Result<(), String> {
++    sc.looked = true;
++    let Some(core) = c1.plain_state() else { return Ok(()) };
++    let (cyc, key) = (soc.periph.cycles, settled_poll_key(soc));
++    let seen = soc.c1_settled.visits.iter().any(|v| v.core == core && v.cyc == cyc && v.poll == key);
++    let (core, cyc, key) = if seen && sc.backoff == 0 {
++        soc.c1_settled.proofs += 1;
++        match prove_round(c1, soc, *left)? {
++            Proof::Fixed { steps, reads } => {
++                *left -= steps;
++                *probing = probing.saturating_sub(steps);
++                let n = *left / steps;
++                let skipped = n * steps;
++                *left -= skipped;
++                *probing = probing.saturating_sub(skipped);
++                c1.insn_count += skipped;
++                soc.periph.poll_add_streak((n * reads) as u32);
++                let s = &mut soc.c1_settled;
++                s.exits += 1;
++                s.rounds += n;
++                s.skipped += skipped;
++                sc.done = true;
++                return Ok(());
++            }
++            Proof::Failed { steps } => {
++                *left = left.saturating_sub(steps);
++                *probing = probing.saturating_sub(steps);
++                sc.backoff = SETTLED_BACKOFF;
++                soc.c1_settled.failed += 1;
++            }
++        }
++        // the proof stepped core 1: remember where it is now
++        let Some(core) = c1.plain_state() else { return Ok(()) };
++        sc.ep = soc.c1_settled.epoch;
++        (core, soc.periph.cycles, settled_poll_key(soc))
++    } else {
++        sc.backoff = sc.backoff.saturating_sub(1);
++        (core, cyc, key)
++    };
++    let v = Settled1Visit { core, cyc, poll: key };
++    if soc.c1_settled.visits.len() < SETTLED_RING {
++        soc.c1_settled.visits.push(v);
++    } else {
++        soc.c1_settled.visits[sc.pos] = v;
++        sc.pos = (sc.pos + 1) % SETTLED_RING;
+     }
+     Ok(())
+ }
+ 
++/// What single-stepping one round of a candidate fixed point found.
++enum Proof {
++    Fixed { steps: u64, reads: u64 },
++    Failed { steps: u64 },
++}
++
++/// Interpret core 1 from where it is, one instruction at a time through the bus, for up to `max` (at most `SETTLED_PROOF_MAX`) instructions:
++/// Fixed if it comes back to this very core state at this pc having made no store, no read that is not free of side effects, no clock jump and
++/// no hardware lock, with no interrupt it could take (the same checks `run_cpu1` makes before every instruction). The instructions run are
++/// real ones and are counted.
++#[inline(never)]
++fn prove_round(c1: &mut Cpu, soc: &mut Soc, max: u64) -> Result<Proof, String> {
++    let Some(start) = c1.plain_state() else { return Ok(Proof::Failed { steps: 0 }) };
++    let pc0 = c1.pc;
++    let (ep0, reads0, cyc0) = (soc.c1_settled.epoch, soc.c1_settled.t4_reads, soc.periph.cycles);
++    let mut steps = 0u64;
++    while steps < max.min(SETTLED_PROOF_MAX) {
++        if soc.periph.any_pending() {
++            if let Some((_irq, prio)) = soc.pending_irq_for(1) {
++                if c1.irq_ready(prio) {
++                    return Ok(Proof::Failed { steps });
++                }
++            }
++        }
++        let mut bus = Core1Bus { soc: &mut *soc, budget: u64::MAX };
++        if let Err(e) = c1.step(&mut bus) {
++            return Err(format!("cpu1: {e:?} at pc {:#010x}", c1.pc));
++        }
++        steps += 1;
++        if soc.c1_settled.epoch != ep0 || soc.periph.cycles != cyc0 {
++            return Ok(Proof::Failed { steps });
++        }
++        if c1.pc == pc0 && c1.plain_state() == Some(start) {
++            return Ok(Proof::Fixed { steps, reads: soc.c1_settled.t4_reads - reads0 });
++        }
++    }
++    Ok(Proof::Failed { steps })
++}
++
+ /// cpu0 alone ran in stretches of this many instructions until it released cpu1, and the rest
+ /// of the stretch it released it in was not run. The block loop stops at the release itself
+ /// now (`run_blocks`), so cpu0 runs alone in one stretch; the instructions it gives up stay the
+@@ -1638,3 +1894,337 @@ mod tests {
+         }
+     }
+ }
++
++// ---- the settled-loop early exit of core 1: whole-state comparisons with the switch off and on ----
++#[cfg(test)]
++mod settled_loop_tests {
++    use super::*;
++    use crate::flaky::FlakyCore1;
++    use crate::XIP_BASE;
++
++    const LOAD: [u8; 4] = [0xd5, 0xec, 0x10, 0x2e]; // r2 = [r1 - 544]
++    const STORE: [u8; 4] = [0xd7, 0xec, 0x51, 0x38]; // [r5 - 128] = r3
++    const SPIN: [u8; 6] = [0x60, 0xff, 0x00, 0x20, 0xfd, 0xff]; // jumps to itself
++    /// if ((r2 & 0x20) != 0) goto back over `len` bytes of code and this branch
++    fn while_set(len: u32) -> [u8; 6] {
++        let o = (-((len + 6) as i32) / 2) as u16;
++        [0x61, 0xff, 0x20, 0x20, o as u8, (o >> 8) as u8]
++    }
++    /// an unconditional jump back over `len` bytes of code and this jump
++    fn jump_back(len: u32) -> [u8; 6] {
++        let o = (-((len + 6) as i32) / 2) as u16;
++        [0x60, 0xff, 0x00, 0x20, o as u8, (o >> 8) as u8]
++    }
++    const WORD: u32 = RAM_BASE + 0x1000;
++    const SINK: u32 = RAM_BASE + 0x2000;
++
++    #[derive(Debug, PartialEq, Clone)]
++    struct End { pc: u32, regs: [u32; 16], sp: u32, insns: u64, cycles: u64, word: u32, sink: u32, poll: (u32, u64), irq_levels: usize, err: Option<String> }
++
++    #[derive(Clone, Copy)]
++    struct Opt { on: bool, jit: bool, flaky: bool, in_isr: bool, addr: Option<u32>, power_cut: bool, cable: bool, handler: Option<(u32, u32)>, on_after: usize }
++    impl Opt {
++        fn new(on: bool) -> Self { Opt { on, jit: false, flaky: false, in_isr: false, addr: None, power_cut: false, cable: false, handler: None, on_after: 0 } }
++    }
++
++    /// calls: (word to write first, software interrupt latch to set first, instructions); returns the end state, (exits, rounds, instructions skipped) and (proofs, failed)
++    fn run(o: Opt, code: &[u8], calls: &[(Option<u32>, bool, u64)]) -> (End, (u64, u64, u64), (u64, u64)) {
++        let mut xip = code.to_vec();
++        xip.resize(code.len() + 512, 0);
++        let mut soc = Soc::new(1 << 20, xip);
++        soc.periph.skip_idle = true;
++        soc.periph.in_isr = o.in_isr;
++        if o.addr == Some(0x10804) { soc.write32(0x10800, 1); soc.periph.cycles += 330; } // TIMER4 running
++        if o.cable { soc.usb_plug(); }
++        soc.write32(WORD, 0x20);
++        if let Some((vec_irq, handler)) = o.handler {
++            soc.write32(VEC_BASE + 4 * vec_irq, handler);
++            // core 1 may take IRQ 120 (the software latch, bit 0) at priority 3
++            soc.write32(0x1eef33c, 1 | (3 << 1));
++        }
++        if o.flaky { soc.flaky_core1 = Some(FlakyCore1::new(0.5, 7)); }
++        if o.power_cut { soc.power_cut = true; }
++        let mut c1 = Cpu::new(XIP_BASE);
++        c1.core_id = 1;
++        c1.jit_on = o.jit;
++        c1.stop_checks = true;
++        if o.handler.is_some() { c1.ie = true; c1.sreg_store[0] |= 0x100; } // core 1 has unmasked interrupts (as the firmware does with sti)
++        c1.regs[1] = o.addr.unwrap_or(WORD) + 544;
++        c1.regs[2] = 0xdead_beef; // (so the first round differs from where the call began: the engine's own idle exit, back at the same pc with the same registers, is not what these tests look at)
++        c1.regs[3] = 0x1234;
++        c1.regs[5] = SINK + 128;
++        let mut err = None;
++        for (i, &(w, latch, n)) in calls.iter().enumerate() {
++            soc.c1_settled.on = o.on && i >= o.on_after;
++            if let Some(w) = w { soc.write32(WORD, w); }
++            if latch { soc.write32(0x1eef1a0, 1); }
++            if let Err(e) = run_cpu1(&mut c1, &mut soc, n) { err = Some(e); break; }
++        }
++        let end = End { pc: c1.pc, regs: c1.regs, sp: c1.sp, insns: c1.insn_count, cycles: soc.periph.cycles, word: soc.ram.read32(WORD - RAM_BASE), sink: soc.ram.read32(SINK - RAM_BASE),
++            poll: soc.periph.poll_state(), irq_levels: c1.irq_levels.len(), err };
++        let s = &soc.c1_settled;
++        (end, (s.exits, s.rounds, s.skipped), (s.proofs, s.failed))
++    }
++    fn poll_only() -> Vec<u8> { let mut c = LOAD.to_vec(); c.extend_from_slice(&while_set(4)); c.extend_from_slice(&SPIN); c }
++    fn poll_and_store() -> Vec<u8> { let mut c = LOAD.to_vec(); c.extend_from_slice(&STORE); c.extend_from_slice(&while_set(8)); c.extend_from_slice(&SPIN); c }
++
++    /// the switch is off by default: a new machine skips nothing
++    #[test]
++    fn the_switch_is_off_by_default() {
++        let soc = Soc::new(1 << 16, vec![0; 64]);
++        assert!(!soc.c1_settled.on);
++    }
++
++    /// a pure wait loop is skipped, and every bit of core state, the clock, the memory and the instruction count come out the same
++    #[test]
++    fn a_pure_polling_loop_is_skipped_and_ends_in_the_identical_state() {
++        for jit in [false, true] {
++            for n in [4999u64, 5003, 1024, 1025, 10_000] {
++                let calls = [(None, false, n), (None, false, n), (None, false, n + 1)];
++                let (a, sa, _) = run(Opt { jit, ..Opt::new(false) }, &poll_only(), &calls);
++                let (b, sb, pb) = run(Opt { jit, ..Opt::new(true) }, &poll_only(), &calls);
++                assert_eq!(a, b, "jit {jit} n {n}: state differs");
++                assert_eq!(sa, (0, 0, 0));
++                assert!(sb.0 >= 1 && sb.2 > 0, "jit {jit} n {n}: nothing was skipped: {sb:?} proofs {pb:?}");
++            }
++        }
++    }
++
++    /// a loop that stores every round is never skipped (and the end state is the same)
++    #[test]
++    fn a_loop_that_stores_is_never_skipped() {
++        for jit in [false, true] {
++            for n in [4999u64, 5003, 10_000] {
++                let calls = [(None, false, n), (None, false, n)];
++                let (a, _, _) = run(Opt { jit, ..Opt::new(false) }, &poll_and_store(), &calls);
++                let (b, sb, _) = run(Opt { jit, ..Opt::new(true) }, &poll_and_store(), &calls);
++                assert_eq!(a, b, "jit {jit} n {n}");
++                assert_eq!(sb, (0, 0, 0), "jit {jit} n {n}: a loop that stores was skipped: {sb:?}");
++                assert_eq!(b.sink, 0x1234, "the store really happened");
++            }
++        }
++    }
++
++    /// what the polled word says changes between calls (as when cpu0 writes it): the skipped loop notices at once and leaves exactly when the unskipped one does
++    #[test]
++    fn a_loop_whose_word_changes_between_calls_leaves_exactly_as_before() {
++        for jit in [false, true] {
++            for first in [3000u64, 4999, 5003] {
++                let calls = [(None, false, first), (None, false, first), (Some(0), false, 100), (Some(0x20), false, 4000), (Some(0), false, 4000)];
++                let (a, _, _) = run(Opt { jit, ..Opt::new(false) }, &poll_only(), &calls);
++                let (b, sb, _) = run(Opt { jit, ..Opt::new(true) }, &poll_only(), &calls);
++                assert_eq!(a, b, "jit {jit} first {first}");
++                assert!(sb.0 >= 1, "jit {jit} first {first}: the waiting stretches were not skipped at all: {sb:?}");
++            }
++        }
++    }
++
++    /// a loop that stops waiting inside the call (the word is zero from the start): not a settled loop, same state
++    #[test]
++    fn a_loop_that_ends_is_left_alone() {
++        let calls = [(Some(0), false, 5000)];
++        let (a, _, _) = run(Opt::new(false), &poll_only(), &calls);
++        let (b, sb, _) = run(Opt::new(true), &poll_only(), &calls);
++        assert_eq!(a, b);
++        assert_eq!(b.regs[2], 0, "the loop really stopped waiting (r2 is the word it read: 0)");
++        assert!(sb.2 < 5000, "only the spin it ends in can be skipped, never the waiting that ended: {sb:?}");
++    }
++
++    /// stores first, then a pure loop: the loop is found once the stores stop, and the state is the same
++    #[test]
++    fn a_pure_loop_after_a_burst_of_stores_is_still_found() {
++        let mut code = STORE.to_vec();
++        code.extend_from_slice(&STORE);
++        code.extend_from_slice(&STORE);
++        code.extend_from_slice(&LOAD);
++        code.extend_from_slice(&while_set(4));
++        code.extend_from_slice(&SPIN);
++        for jit in [false, true] {
++            let calls = [(None, false, 5000), (None, false, 5000)];
++            let (a, _, _) = run(Opt { jit, ..Opt::new(false) }, &code, &calls);
++            let (b, sb, _) = run(Opt { jit, ..Opt::new(true) }, &code, &calls);
++            assert_eq!(a, b, "jit {jit}");
++            assert_eq!(b.sink, 0x1234, "the stores happened");
++            assert!(sb.0 >= 1, "jit {jit}: the loop after the stores was not found: {sb:?}");
++        }
++    }
++
++    /// the poll counter: core 1 reading TIMER4 while cpu0 is in an ISR leaves the detector alone, exactly as the engine counts it without the skip
++    #[test]
++    fn timer_poll_counter_matches_with_cpu0_in_an_isr_or_not() {
++        for in_isr in [true, false] {
++            for jit in [false, true] {
++                let calls = [(None, false, 5003), (None, false, 5003), (None, false, 777)];
++                let a = Opt { in_isr, jit, addr: Some(0x10804), ..Opt::new(false) };
++                let b = Opt { in_isr, jit, addr: Some(0x10804), ..Opt::new(true) };
++                let (ea, _, _) = run(a, &poll_only(), &calls);
++                let (eb, sb, _) = run(b, &poll_only(), &calls);
++                assert_eq!(ea, eb, "in_isr {in_isr} jit {jit}: poll state or core differs");
++                if in_isr { assert!(sb.0 >= 1, "in_isr: the constant-timer loop is a fixed point and should have been skipped: {sb:?}"); }
++            }
++        }
++    }
++
++    /// an interrupt core 1 can take, arriving after the loop was skipped: taken at once, exactly as without the skip
++    #[test]
++    fn an_interrupt_after_a_skipped_loop_is_taken_exactly_as_before() {
++        for jit in [false, true] {
++            let mut code = poll_only();
++            let handler = XIP_BASE + code.len() as u32;
++            code.extend_from_slice(&SPIN); // the handler: spins elsewhere
++            let calls = [(None, false, 5000), (None, false, 5000), (None, true, 5000), (None, false, 3000)];
++            let (ea, _, _) = run(Opt { jit, handler: Some((120, handler)), ..Opt::new(false) }, &code, &calls);
++            let (eb, sb, _) = run(Opt { jit, handler: Some((120, handler)), ..Opt::new(true) }, &code, &calls);
++            assert_eq!(ea, eb, "jit {jit}");
++            assert!(sb.0 >= 1, "jit {jit}: the loop before the interrupt should have been skipped");
++            assert!(ea.pc >= handler && ea.pc < handler + 6, "jit {jit}: the interrupt was really taken (pc {:#x}, handler {:#x})", ea.pc, handler);
++        }
++    }
++
++    /// a pending interrupt core 1 cannot take (no enable) does not matter: still skipped, still identical
++    #[test]
++    fn an_interrupt_core_1_may_not_take_does_not_stop_a_skip() {
++        let calls = [(None, true, 5000), (None, false, 5000)];
++        let (ea, _, _) = run(Opt::new(false), &poll_only(), &calls);
++        let (eb, sb, _) = run(Opt::new(true), &poll_only(), &calls);
++        assert_eq!(ea, eb);
++        assert!(sb.0 >= 1);
++    }
++
++    /// a flaky core 1 misreads RAM loads from a random stream: skipping rounds would skip draws. Never skipped, identical
++    #[test]
++    fn a_flaky_core_1_is_never_skipped() {
++        for jit in [false, true] {
++            let calls = [(None, false, 5000), (None, false, 5000)];
++            let (ea, _, _) = run(Opt { jit, flaky: true, ..Opt::new(false) }, &poll_only(), &calls);
++            let (eb, sb, _) = run(Opt { jit, flaky: true, ..Opt::new(true) }, &poll_only(), &calls);
++            assert_eq!(ea, eb, "jit {jit}");
++            assert_eq!(sb, (0, 0, 0), "jit {jit}: a flaky core was skipped");
++        }
++    }
++
++    /// a chip that lost power: core 1 does not run, as before
++    #[test]
++    fn a_power_cut_stops_cpu1_as_before() {
++        let calls = [(None, false, 5000)];
++        let (ea, _, _) = run(Opt { power_cut: true, ..Opt::new(false) }, &poll_only(), &calls);
++        let (eb, sb, _) = run(Opt { power_cut: true, ..Opt::new(true) }, &poll_only(), &calls);
++        assert_eq!(ea, eb);
++        assert_eq!(ea.err.as_deref(), Some(POWER_CUT));
++        assert_eq!(sb, (0, 0, 0));
++    }
++
++    /// USB: with a cable CON1's done bit follows the clock, so a loop reading it is not pure and never skipped; without one it is a plain register and is
++    #[test]
++    fn a_usb_con1_loop_is_skipped_only_without_a_cable() {
++        let mut code = LOAD.to_vec();
++        code.extend_from_slice(&jump_back(4));
++        for jit in [false, true] {
++            let calls = [(None, false, 5000), (None, false, 5000), (None, false, 5000)];
++            for cable in [true, false] {
++                let addr = Some(crate::usb::USB_LO + 4);
++                let (ea, _, _) = run(Opt { jit, cable, addr, ..Opt::new(false) }, &code, &calls);
++                let (eb, sb, _) = run(Opt { jit, cable, addr, ..Opt::new(true) }, &code, &calls);
++                assert_eq!(ea, eb, "jit {jit} cable {cable}");
++                if cable { assert_eq!(sb, (0, 0, 0), "jit {jit}: a loop reading CON1 with a cable was skipped"); }
++                else { assert!(sb.0 >= 1, "jit {jit}: the loop was not skipped without a cable: {sb:?}"); }
++            }
++        }
++    }
++
++    /// PLL0 as the bootloader leaves it: a loop waiting on it (bit 5 of the control word set) is a plain-register fixed point, skipped, identical
++    #[test]
++    fn a_pll0_wait_loop_is_skipped_and_identical() {
++        for jit in [false, true] {
++            let calls = [(None, false, 5000), (None, false, 5000)];
++            let addr = Some(0x119a4);
++            let (ea, _, _) = run(Opt { jit, addr, ..Opt::new(false) }, &poll_only(), &calls);
++            let (eb, sb, _) = run(Opt { jit, addr, ..Opt::new(true) }, &poll_only(), &calls);
++            assert_eq!(ea, eb, "jit {jit}");
++            assert_eq!(ea.regs[2] & 0x20, 0x20, "the loop really waits (PLL0 CON1 reads with bit 5 set)");
++            assert!(sb.0 >= 1, "jit {jit}: not skipped: {sb:?}");
++        }
++    }
++
++    /// a core that stores in every round is not worth looking at: the hold-off sets in (calls run without any bookkeeping), the hold stays bounded, nothing is skipped, and the state is the same
++    #[test]
++    fn a_busy_core_makes_the_looking_pause_without_changing_anything() {
++        for jit in [false, true] {
++            let calls: Vec<_> = (0..300).map(|_| (None, false, 3000u64)).collect();
++            let (ea, _, _) = run(Opt { jit, ..Opt::new(false) }, &poll_and_store(), &calls);
++            let (eb, sb, _) = run(Opt { jit, ..Opt::new(true) }, &poll_and_store(), &calls);
++            assert_eq!(ea, eb, "jit {jit}");
++            assert_eq!(sb, (0, 0, 0), "jit {jit}: a storing loop was skipped");
++        }
++        // (the counters: look at the machine itself)
++        let mut xip = poll_and_store();
++        xip.resize(xip.len() + 512, 0);
++        let mut soc = Soc::new(1 << 20, xip);
++        soc.write32(WORD, 0x20);
++        soc.c1_settled.on = true;
++        let mut c1 = Cpu::new(XIP_BASE);
++        c1.core_id = 1;
++        c1.stop_checks = true;
++        c1.regs[1] = WORD + 544;
++        c1.regs[3] = 0x1234;
++        c1.regs[5] = SINK + 128;
++        let mut max_hold = 0;
++        for _ in 0..300 {
++            run_cpu1(&mut c1, &mut soc, 3000).unwrap();
++            max_hold = max_hold.max(soc.c1_settled.hold);
++        }
++        assert!(soc.c1_settled.held > 100, "the hold-off did not set in: {} calls held", soc.c1_settled.held);
++        assert!(max_hold <= 255, "the hold grew past its bound: {max_hold}");
++        assert!(soc.c1_settled.held < 300, "detection was switched off for good");
++    }
++
++    /// the hold-off ends by itself: with a long hold pending, pure loops that begin from a new state each call are skipped again once it runs out, with the same end state as without
++    #[test]
++    fn the_looking_resumes_when_the_hold_runs_out() {
++        for jit in [false, true] {
++            let words: Vec<(Option<u32>, bool, u64)> = (0..80).map(|i| (Some(if i % 2 == 0 { 0x20 } else { 0x30 }), false, 3000u64)).collect();
++            let mk = |on: bool| {
++                let mut xip = poll_only();
++                xip.resize(xip.len() + 512, 0);
++                let mut soc = Soc::new(1 << 20, xip);
++                soc.c1_settled.on = on;
++                soc.c1_settled.miss = SETTLED_MISS_MAX;
++                soc.c1_settled.hold = if on { 63 } else { 0 };
++                let mut c1 = Cpu::new(XIP_BASE);
++                c1.core_id = 1;
++                c1.jit_on = jit;
++                c1.stop_checks = true;
++                c1.regs[1] = WORD + 544;
++                c1.regs[3] = 0x1234;
++                c1.regs[5] = SINK + 128;
++                (soc, c1)
++            };
++            let (mut sa, mut ca) = mk(false);
++            let (mut sb, mut cb) = mk(true);
++            let mut first_exit_call = None;
++            for (i, &(w, _, n)) in words.iter().enumerate() {
++                if let Some(w) = w { sa.write32(WORD, w); sb.write32(WORD, w); }
++                run_cpu1(&mut ca, &mut sa, n).unwrap();
++                run_cpu1(&mut cb, &mut sb, n).unwrap();
++                if first_exit_call.is_none() && sb.c1_settled.exits > 0 { first_exit_call = Some(i); }
++            }
++            assert_eq!((ca.pc, ca.regs, ca.sp, ca.insn_count, sa.periph.cycles), (cb.pc, cb.regs, cb.sp, cb.insn_count, sb.periph.cycles), "jit {jit}");
++            assert_eq!(sb.c1_settled.held, 63, "jit {jit}");
++            let first = first_exit_call.expect("detection never resumed");
++            assert!(first >= 63, "jit {jit}: skipped while the hold was running: call {first}");
++            assert!(sb.c1_settled.exits >= 1);
++        }
++    }
++
++    /// the switch turned on in the middle of a run changes nothing about the machine
++    #[test]
++    fn turning_the_switch_on_mid_run_changes_nothing() {
++        for jit in [false, true] {
++            let calls = [(None, false, 5000), (None, false, 5000), (None, false, 5000), (None, false, 5000)];
++            let (ea, _, _) = run(Opt { jit, ..Opt::new(false) }, &poll_only(), &calls);
++            let (eb, sb, _) = run(Opt { jit, on_after: 2, ..Opt::new(true) }, &poll_only(), &calls);
++            // (a call that begins inside the loop with the same registers is the engine's own idle exit, so whether the switch skips anything there is not the point)
++            assert_eq!(ea, eb, "jit {jit}: {sb:?}");
++        }
++    }
++}
+diff --git a/crates/fm1-soc/src/periph.rs b/crates/fm1-soc/src/periph.rs
+index c5c64cb..eb9b279 100644
+--- a/crates/fm1-soc/src/periph.rs
++++ b/crates/fm1-soc/src/periph.rs
+@@ -767,6 +767,14 @@ impl Periph {
+ 
+     // ---- registers ------------------------------------------------------
+ 
++    /// The TIMER4 poll detector's state (`cnt_streak`, `last_cnt_read`), to compare, and to carry over the reads of skipped rounds (`machine::Settled1`).
++    pub fn poll_state(&self) -> (u32, u64) {
++        (self.cnt_streak, self.last_cnt_read)
++    }
++    pub fn poll_add_streak(&mut self, n: u32) {
++        self.cnt_streak = self.cnt_streak.wrapping_add(n);
++    }
++
+     /// Reads handled here; `None` = plain SFR storage.
+     pub fn read(&mut self, addr: u32) -> Option<u32> {
+         Some(match addr {
+diff --git a/crates/fm1-web/src/lib.rs b/crates/fm1-web/src/lib.rs
+index e0ef0eb..c604ff3 100644
+--- a/crates/fm1-web/src/lib.rs
++++ b/crates/fm1-web/src/lib.rs
+@@ -909,6 +909,19 @@ pub extern "C" fn fm1_has_audio_in() -> u32 { machine().is_some_and(|m| m.soc.us
+ #[no_mangle]
+ pub extern "C" fn fm1_xip_tail(mode: u32) { fm1_soc::fwsc::XIP_TAIL_DECRYPT.store(mode != 0, std::sync::atomic::Ordering::Relaxed); }
+ 
++/// The settled-loop early exit of core 1 (fm1_soc::machine::Settled1): 1 on, 0 off. Off in every new boot; a front end that wants it calls this after each boot.
++#[no_mangle]
++pub extern "C" fn fm1_settled_loop(on: u32) {
++    if let Some(m) = machine() { m.soc.c1_settled.on = on != 0; }
++}
++/// Its counters: 0 calls that skipped, 1 rounds skipped, 2 instructions skipped, 3 proofs run, 4 proofs that failed, 5 calls held off (not looked at, because core 1 was busy).
++#[no_mangle]
++pub extern "C" fn fm1_settled_loop_stat(i: u32) -> f64 {
++    let Some(m) = machine() else { return 0.0 };
++    let s = &m.soc.c1_settled;
++    match i { 0 => s.exits as f64, 1 => s.rounds as f64, 2 => s.skipped as f64, 3 => s.proofs as f64, 4 => s.failed as f64, 5 => s.held as f64, _ => 0.0 }
++}
++
+ /// Emulated milliseconds since boot.
+ #[no_mangle]
+ pub extern "C" fn fm1_ms() -> u32 {

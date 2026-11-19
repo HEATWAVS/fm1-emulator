@@ -23,8 +23,9 @@ const REGIONS = [
   { id: "hints", label: "Shortcut hints", sel: ".deck > p.hint", place: "end" },
 ];
 const PANELS = [
-  { id: "now", label: "Now running", sel: "aside.side-left > section.box:not(.update-box)" },
-  { id: "radar", label: "Firmware radar", sel: "aside.side-left > section.update-box" },
+  { id: "now", label: "Now running", sel: "aside.side-left > section.box:not(.update-box):not(.chip-box)" },
+  { id: "chip", label: "Flash chip", sel: "aside.side-left > section.chip-box" },
+  { id: "radar", label: "Firmware radar", sel: "aside.side-right > section.update-box" },
   { id: "install", label: "Install firmware", sel: "aside.side-right > section.install-box" },
 ];
 // floating tool panels: [panel id, its button id, name]

@@ -35,6 +35,15 @@ Work efficiently without compromising engineering quality.
   research.
 
 ## Engines and chip test modes (Component 8)
-- The shipped `site/emulator/fm1_web.wasm` is the application's Default engine and is never rebuilt or replaced here. The unified engine `site/emulator/fm1_web_unified.wasm` runs the chip test modes only; it is built by `ci/engine/build.mjs --unified` from pinned sources (`ci/engine/pin.json`) and its hash is pinned by a quick-tier test. Provenance and licence notes: `docs/dev/ARCHITECTURE.md`, `DECISIONS.md` D94-D99.
+- Default runs the optimized unified engine `site/emulator/fm1_web_frodhes_optimized.wasm` with the CPU optimization switched on (D109). The shipped `site/emulator/fm1_web.wasm` is never rebuilt or replaced here: it draws the front panel (`fm1_skin`) and is the *Previous engine* reference mode. The unified engine `site/emulator/fm1_web_unified.wasm` runs the chip test modes; both are built by `ci/engine/build.mjs --optimized` from pinned sources (`ci/engine/pin.json`) and their hashes are pinned by quick-tier tests. Provenance and licence notes: `docs/dev/ARCHITECTURE.md`, `DECISIONS.md` D94-D99.
 - Chip test sessions never touch saved patches (ephemeral). Never claim a chip profile matches a physical chip: both are datasheet-based reference profiles.
 - Never access the separate FM1 Firmware project. Never push.
+
+## Permanent project rule: Emulator, not firmware
+The objective is to improve the FM-1 emulator, never to fix or modify individual firmware.
+- Treat Frodhes, X0X, Melodee, stock firmware, and other firmware as unmodified test inputs.
+- All fixes, optimizations, and performance improvements must target the emulator itself.
+- Never modify, patch, rewrite, or optimize firmware code or firmware behavior to work around emulator problems.
+- Differences in firmware execution should be used to identify weaknesses in the emulator.
+- Emulator improvements should preserve correct emulated behavior and work reliably across different firmware workloads.
+- Do not sacrifice one firmware's performance or correctness unnecessarily to improve another.

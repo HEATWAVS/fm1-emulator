@@ -7,6 +7,8 @@
 //   options: --out DIR (default ci/engine/out, gitignored)   --url URL (clone source)   --test (also run the Rust host tests + oracle replay)
 //            --unified (also build the unified engine, fm1_web_unified.wasm: the chip engine + the USB exports, USB audio in and the XIP-tail switch, with usb.rs
 //            from upstream 9acb2df; pin.json "unified". Needs a clone of the whole upstream repository, not a shallow one)
+//            --optimized (implies --unified; also build the optimized unified engine, fm1_web_frodhes_optimized.wasm: the unified engine + settled-loop.patch, the settled-loop early exit of core 1,
+//            off unless a front end switches it on; pin.json "frodhesOptimized")
 //
 // Output (all under --out, never committed): fm1_web_chips.wasm, BUILD-RECORD.json, src/ (the patched tree), target/.
 // The shipped site/emulator/fm1_web.wasm is never read or written here. Needs: node, git, rustc/cargo with the
@@ -16,23 +18,24 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writ
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PIN, UNIFIED, DEFAULT_OUT, verifyEngineFile, verifyUnifiedFile } from "./verify.mjs";
+import { PIN, UNIFIED, OPTIMIZED, DEFAULT_OUT, verifyEngineFile, verifyUnifiedFile, verifyOptimizedFile } from "./verify.mjs";
 import { renderTables } from "./tables.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 function fail(msg) { console.error(`engine build: ${msg}`); process.exit(1); }
 const argv = process.argv.slice(2);
-const opt = { out: DEFAULT_OUT, url: PIN.upstream.url, upstream: null, test: false, unified: false };
+const opt = { out: DEFAULT_OUT, url: PIN.upstream.url, upstream: null, test: false, unified: false, optimized: false };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--test") opt.test = true;
   else if (a === "--unified") opt.unified = true;
+  else if (a === "--optimized") opt.unified = opt.optimized = true;
   else if (a === "--out" || a === "--url" || a === "--upstream") { if (argv[i + 1] === undefined) fail(`${a} needs a value`); opt[a.slice(2)] = argv[++i]; }
   else fail(`unknown option ${a} (see the header of ci/engine/build.mjs)`);
 }
 opt.out = resolve(opt.out);
-const step = (n, text) => console.log(`\n[${n}/10] ${text}`);
+const step = (n, text) => console.log(`\n[${n}/${opt.optimized ? 11 : 10}] ${text}`);
 const out = (cmd, args, o = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 1 << 28, ...o }).trim();
 const tool = (cmd, args) => { try { return out(cmd, args, { stdio: ["ignore", "pipe", "ignore"] }); } catch { return null; } };
 
@@ -159,5 +162,29 @@ if (opt.unified) {
   writeFileSync(resolve(opt.out, "BUILD-RECORD-UNIFIED.json"), JSON.stringify(urecord, null, 2) + "\n");
   if (!uv.ok) fail("verification of the unified engine failed (see above)");
   console.log(`\nbuilt ${uEngine}\nsha256 ${uv.sha256}`);
+}
+// ------------------------------------------------------------------ 11 optional: the optimized unified engine (the settled-loop early exit of core 1)
+if (opt.optimized) {
+  step(11, `the optimized engine (--optimized): the unified engine + ${OPTIMIZED.patch.file}`);
+  const oPatch = resolve(here, OPTIMIZED.patch.file), oBytes = readFileSync(oPatch);
+  if (sha(oBytes) !== OPTIMIZED.patch.sha256) fail(`${OPTIMIZED.patch.file} has sha256 ${sha(oBytes)}, pin.json expects ${OPTIMIZED.patch.sha256}`);
+  const osrc = resolve(opt.out, "src-optimized");
+  rmSync(osrc, { recursive: true, force: true });
+  cpSync(resolve(opt.out, "src-unified"), osrc, { recursive: true });
+  execFileSync("git", ["-c", "core.autocrlf=false", "apply", "--check", oPatch], { cwd: osrc, env: gitEnv, stdio: "inherit" });
+  execFileSync("git", ["-c", "core.autocrlf=false", "apply", oPatch], { cwd: osrc, env: gitEnv, stdio: "inherit" });
+  console.log(`  ${OPTIMIZED.patch.file} applied cleanly to the unified tree (fm1-soc: machine.rs, periph.rs, lib.rs; fm1-web: lib.rs)`);
+  const or = spawnSync("cargo", ["build", "--release", "-p", "fm1-web", "--target", "wasm32-unknown-unknown", "--target-dir", resolve(opt.out, "target-optimized"), "--offline"], { cwd: osrc, env, stdio: "inherit" });
+  if (or.status !== 0) fail(`cargo build (optimized) failed (exit ${or.status})`);
+  const oEngine = resolve(opt.out, OPTIMIZED.artifact);
+  copyFileSync(resolve(opt.out, "target-optimized/wasm32-unknown-unknown/release/fm1_web.wasm"), oEngine);
+  const ov = verifyOptimizedFile(oEngine, { rustc: rustcLine });
+  console.log(`  sha256 ${ov.sha256}  (${ov.bytes} bytes)`);
+  console.log(`  exports ${ov.exports.length}: ${ov.exportsOk ? "exactly the expected set" : `MISSING ${ov.missing} UNEXPECTED ${ov.unexpected}`}; imports ${ov.importsOk ? "as expected" : "DIFFER"}`);
+  console.log(`  hash: ${ov.hash === "match" ? "matches the verified hash for this toolchain" : ov.hash === "MISMATCH" ? "DOES NOT MATCH the verified hash for this toolchain" : `no verified hash for "${rustcLine}" in pin.json (exports still checked)`}`);
+  const orecord = { builtWith: "ci/engine/build.mjs --optimized", toolchain: { rustc: rustcLine, cargo: cargoLine }, upstream: { ...PIN.upstream, usedClone: upstream }, usbSource: UNIFIED.usbSource, chipPatchSha256: PIN.patch.sha256, unifiedPatchSha256: UNIFIED.patch.sha256, settledLoopPatchSha256: OPTIMIZED.patch.sha256, tablesSha256: PIN.generatedTablesSha256, artifact: { file: OPTIMIZED.artifact, sha256: ov.sha256, bytes: ov.bytes }, exports: ov.exports.length, hashCheck: ov.hash };
+  writeFileSync(resolve(opt.out, "BUILD-RECORD-OPTIMIZED.json"), JSON.stringify(orecord, null, 2) + "\n");
+  if (!ov.ok) fail("verification of the optimized engine failed (see above)");
+  console.log(`\nbuilt ${oEngine}\nsha256 ${ov.sha256}`);
 }
 console.log(`\nbuilt ${engine}\nsha256 ${v.sha256}`);

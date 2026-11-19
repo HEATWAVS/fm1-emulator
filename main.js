@@ -203,6 +203,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+  win.maximize();   // opens filling the work area (the taskbar stays visible); the bounds above are what it restores to
   let recovering = false;
   function showRecovery(reason) {
     if (win.isDestroyed() || recovering) return;

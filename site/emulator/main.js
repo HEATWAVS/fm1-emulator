@@ -4,8 +4,8 @@
 // in the wasm: a catalog entry's fetched from its author's site, or one opened from this
 // computer (M-VAVE's own: their server does not let other pages fetch it).
 import { fetchPackage } from "./fwsc.js";
-import { ENGINE_FILES } from "./chipmode.js?v=2";
-import { initChipTest } from "./chiptest.js?v=2";
+import { ENGINE_FILES } from "./chipmode.js?v=14";
+import { initChipTest } from "./chiptest.js?v=17";
 import { SaveStore, packageHash, changedSectors, packSectors, exportSave, importSave } from "./persistence.js";
 import "./catalog-source.js";
 import { judgeSecond, recovered } from "./perf-judge.js?v=3";
@@ -106,8 +106,9 @@ const saveFailure = error => {
 // per-firmware capability audit (what each one accepts, so the info panel can say how to drive it)
 const CAPS = await fetch("classify.json?v=53").then(r => r.json()).then(a => Object.fromEntries(a.map(x => [x.id, x]))).catch(() => ({}));
 
-const wasm = await (await fetch("fm1_web.wasm?v=25")).arrayBuffer();   // the worklet gets its own copy (bump v when the wasm is rebuilt)
-// Flash chip test modes (chipmode.js): Default runs this engine; the others run the unified engine, fetched on first use. The panel below is always drawn by THIS engine's instance.
+const wasm = await (await fetch("fm1_web.wasm?v=25")).arrayBuffer();   // the shipped engine: it draws the front panel below (fm1_skin, which only it has) and is the "Previous engine" reference mode (bump v when the wasm is rebuilt)
+// Which engine runs the firmware (chipmode.js): Default runs the optimized unified engine (the unified engine with the CPU optimization switched on); the test modes run the unified engine or, for the reference mode, the shipped one.
+// Each is fetched on first use. The panel below is always drawn by the shipped engine's instance, whatever runs the firmware.
 const engineBytes = { shipped: wasm };
 async function engineBytesFor(mode) {
   const e = ENGINE_FILES[mode.engine];
@@ -1507,7 +1508,7 @@ function boot(options = {}) {
         bootWaiters.set(seq, { resolve, reject, timer });
       });
       window.FM1Loader?.stage("initializing virtual hardware");
-      engine.postMessage({ type: "boot", seq, wasm: bytesForEngine.slice(0), engineId: mode.engine, chip: mode.chip, chipTiming, package: got.bytes.slice().buffer,
+      engine.postMessage({ type: "boot", seq, wasm: bytesForEngine.slice(0), engineId: mode.engine, chip: mode.chip, chipTiming, settledLoop: !!mode.settledLoop, package: got.bytes.slice().buffer,
         sectors: packSectors(sectors).buffer, syx: importedBank ? importedBank.slice().buffer : null,
         mhz: clock, jit: jitOn(),
         jitMax: window.FM1Desktop ? 32 : 16,
@@ -1588,7 +1589,7 @@ async function startAudio() {
       await ac.audioWorklet.addModule("stream-worklet.js?v=1");
       const prefill = streamPrefillFrames();
       node = new AudioWorkletNode(ac, "fm1-stream", { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { prefill } });
-      worker = new Worker("engine.js?v=2", { type: "module" });
+      worker = new Worker("engine.js?v=14", { type: "module" });
       worker.onerror = (e) => {
         status.textContent = `the emulator worker failed: ${e.message || "unknown error"}`;
         issue.show("boot", { title: "Emulator stopped", text: status.textContent + ". Press Start to run it again.", level: "error", persist: true });
@@ -1599,7 +1600,7 @@ async function startAudio() {
       node.port.onmessage = (e) => { if (e.data?.type === "stream") stream = e.data; };
       engine = worker;
     } else {
-      await ac.audioWorklet.addModule("worklet.js?v=32");
+      await ac.audioWorklet.addModule("worklet.js?v=44");
       node = new AudioWorkletNode(ac, "fm1", { numberOfInputs: 0, outputChannelCount: [2] });
       engine = node.port;
     }

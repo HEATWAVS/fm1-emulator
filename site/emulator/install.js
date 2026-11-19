@@ -165,7 +165,8 @@ function build(side) {
         </div>
       </details>
     </details>`;
-  side.appendChild(box);
+  const radar = side.querySelector(":scope > section.update-box");   // Firmware radar sits under Install firmware
+  if (radar) side.insertBefore(box, radar); else side.appendChild(box);
   for (const b of box.querySelectorAll(".fi-subrow button,.fi-recov-grid button")) if (!b.title) b.title = b.textContent.trim();
 
   const sel = box.querySelector("#inst-fw");

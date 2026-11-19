@@ -10,8 +10,11 @@ Rust→WebAssembly pi32v2 emulation engine and the base player page.
 fm1-emu is Copyright (c) 2026 Joakim Eriksson and is distributed under the MIT License. Its copyright and
 permission notice, which applies to the engine and the player page this project is based on, is reproduced
 in full, unchanged, in [LICENSES/MIT-fm1-emu.txt](LICENSES/MIT-fm1-emu.txt) (the project's own
-[LICENSE](LICENSE) is kept as it was). It covers the shipped engine (`site/emulator/fm1_web.wasm`) and the
-unified chip-test engine (`site/emulator/fm1_web_unified.wasm`).
+[LICENSE](LICENSE) is kept as it was). It covers the shipped engine (`site/emulator/fm1_web.wasm`), the
+unified chip-test engine (`site/emulator/fm1_web_unified.wasm`) and the optimized unified engine
+(`site/emulator/fm1_web_frodhes_optimized.wasm`, an experimental validation build: the unified engine plus this project's
+`ci/engine/settled-loop.patch`, which adds an early exit for loops the second CPU core provably cannot leave; it is built from the same
+upstream sources by `ci/engine/build.mjs --optimized`).
 
 The unified engine is built from fm1-emu v0.3.0 (commit `631b790b191e87ea8b796d351cfe7e61ab366794`) with this
 project's patches (`ci/engine/chip-profiles.patch`, `ci/engine/unified-engine.patch`), and with `usb.rs` taken whole

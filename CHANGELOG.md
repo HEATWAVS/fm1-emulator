@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Flash chip compatibility is a box of its own under Now running, with a fold button like the other boxes: Default / Older / Newer chip buttons (picking one restarts the firmware on that chip), what the chip does, the warning, Compare chips and the explanations, always showing. A badge in the top bar names the chip while a chip mode is on. The sidebar's Clock is now called CPU clock.
+- Compare chips gives a plain verdict (did the firmware start, show a screen, start its audio and write to flash on the older and newer chip models), a code check for the two chips' IDs, and a copyable report about that firmware only. Only Default mode saves; the chip models keep nothing.
+- The Firmware radar moved to the right sidebar, under Install firmware, and the desktop window opens maximized.
+- One engine: the unified engine with a validated CPU optimization (settled-loop early exit of core 1) now runs every firmware; no engine or optimization selection is needed. Frodhes runs about 2.9x faster; the other bundled packages are unchanged in behaviour with the optimization on or off.
+- The previous engine remains for the front panel and as a reference mode in the Flash chip test panel.
+- The XIP tail after the app area is decrypted (as upstream does), which the official stock firmware needs to start.
+- Known limitations: see README (15 PLL0 packages, 6 audio-in packages, `dx747`/`clatter`, stock firmware sound/UI and speed, real audio device and Electron untested).
+
 ## 1.1.3 — 2026-11-11
 
 - Windows USB recovery guidance and MASIF compatibility filtering.
