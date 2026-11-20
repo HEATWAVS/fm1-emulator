@@ -18,6 +18,10 @@ choose a firmware, press **Start**, and play with your keyboard, mouse, or a MID
 
 One engine with a validated CPU optimization, a Flash chip compatibility box with Compare chips, and a maximized desktop window. See the [release notes](docs/RELEASE-NOTES-1.1.4.md) and the known limitations below.
 
+<p align="center">
+  <img src="docs/screenshots/14-flash-chip-compare.png" alt="Flash chip box: Default, Older chip and Newer chip modes, and a Compare chips verdict" width="300">
+</p>
+
 ## What's new in 1.1.3
 
 USB recovery guidance and safer Windows firmware selection, plus playback hardening, Focus, and patch-bay controls.
