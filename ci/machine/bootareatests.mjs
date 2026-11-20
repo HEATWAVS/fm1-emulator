@@ -272,7 +272,7 @@ export function registerBootAreaQuickTests(testQuick, { engine }) {
     // an independent oracle: per byte, the first region (in REGION_ORDER) whose ranges contain it
     const own = (i) => { for (const k of REGION_ORDER) if (k !== "other" && r.regions[k].ranges.some(([lo, hi]) => i >= lo && i < hi)) return k; return "other"; };
     const want = Object.fromEntries(REGION_ORDER.map((k) => [k, { changed: 0, indeterminate: 0, both: 0 }]));
-    for (const i of [...Array(0x2000).keys(), ...Array(0x100).keys().map((n) => 0xff000 + n)]) {          // every byte that is changed or unknown lies here; the rest of the flash is equal and known
+    for (const i of [...Array(0x2000).keys(), ...Array.from({ length: 0x100 }, (_, n) => 0xff000 + n)]) {          // every byte that is changed or unknown lies here; the rest of the flash is equal and known
       const c = image[i] !== ref[i], u = ranges.some(([lo, hi]) => i >= lo && i <= hi), k = own(i);
       if (c) want[k].changed++; if (u) want[k].indeterminate++; if (c && u) want[k].both++;
     }
