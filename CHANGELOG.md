@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.4 — 2026-11-20
 
 - Flash chip compatibility is a box of its own under Now running, with a fold button like the other boxes: Default / Older / Newer chip buttons (picking one restarts the firmware on that chip), what the chip does, the warning, Compare chips and the explanations, always showing. A badge in the top bar names the chip while a chip mode is on. The sidebar's Clock is now called CPU clock.
 - Compare chips gives a plain verdict (did the firmware start, show a screen, start its audio and write to flash on the older and newer chip models), a code check for the two chips' IDs, and a copyable report about that firmware only. Only Default mode saves; the chip models keep nothing.

@@ -14,6 +14,10 @@ choose a firmware, press **Start**, and play with your keyboard, mouse, or a MID
 
 ---
 
+## What's new in 1.1.4
+
+One engine with a validated CPU optimization, a Flash chip compatibility box with Compare chips, and a maximized desktop window. See the [release notes](docs/RELEASE-NOTES-1.1.4.md) and the known limitations below.
+
 ## What's new in 1.1.3
 
 USB recovery guidance and safer Windows firmware selection, plus playback hardening, Focus, and patch-bay controls.
