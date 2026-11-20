@@ -1,7 +1,7 @@
 # Installation & first run
 
 Download the build for your system from the
-[Releases](https://github.com/briksquared/fm1-emulator/releases/latest) page.
+[Releases](https://github.com/HEATWAVS/fm1-emulator/releases/latest) page.
 
 **Flash any firmware to your FM-1 in a few clicks, and recover if anything goes wrong.** Once the app is
 installed, the **Firmware uplink** panel sends any firmware to a connected FM-1, and

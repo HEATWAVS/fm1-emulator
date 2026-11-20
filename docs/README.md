@@ -7,4 +7,4 @@ Self-serve documentation for installing, using, and troubleshooting the emulator
 - **[Firmware](Firmware.md)** — switch firmware, load your own `.fwsc`, where to find more
 - **[Hardware flashing & recovery](Recovery.md)** — back up / restore / reinstall firmware on a real FM-1
 
-Not covered here? Open an [issue](https://github.com/briksquared/fm1-emulator/issues).
+Not covered here? Open an [issue](https://github.com/HEATWAVS/fm1-emulator/issues).

@@ -5,8 +5,8 @@
 An offline desktop emulator for the **M-VAVE FM-1**. Run FM-1 firmware with no hardware:
 choose a firmware, press **Start**, and play with your keyboard, mouse, or a MIDI controller.
 
-[![Release](https://img.shields.io/github/v/release/briksquared/fm1-emulator?label=release)](https://github.com/briksquared/fm1-emulator/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/briksquared/fm1-emulator/total?label=downloads)](https://github.com/briksquared/fm1-emulator/releases)
+[![Release](https://img.shields.io/github/v/release/HEATWAVS/fm1-emulator?label=release)](https://github.com/HEATWAVS/fm1-emulator/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/HEATWAVS/fm1-emulator/total?label=downloads)](https://github.com/HEATWAVS/fm1-emulator/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational)
 
@@ -27,7 +27,7 @@ Patch bay · generative modules · cable motion · desktop MIDI link · colour t
 
 ## Download
 
-Get the latest build for your system from the [**Releases**](https://github.com/briksquared/fm1-emulator/releases/latest) page.
+Get the latest build for your system from the [**Releases**](https://github.com/HEATWAVS/fm1-emulator/releases/latest) page.
 
 | OS | File |
 | --- | --- |
@@ -131,14 +131,14 @@ Known limitations (details in `docs/dev/ARCHITECTURE.md`):
 - **`dx747` and `clatter`** write a different 33-byte flash record and show small audio differences from the previous engine, because the new engine decrypts the bytes after the app area (as upstream does). Which one a physical FM-1 shows is not known.
 - **The official stock `FM-1.fwsc`** (not bundled) now boots, but its sound generation and its complete screen/UI have **not** been verified; in the checks it drew only a status bar and produced silent audio, and it ran at about 0.1x real time (so it is not usable interactively yet).
 - **Heavy firmware** can need more processing than a PC can deliver in real time, so its audio may underrun. In the checks the slowest bundled packages were `duell`, `playa`, `dark1`, `perf1`, `penumbra`, `satie1` and `386dx`, which ran well below real time under load; `frodhes` and `melodee` were close behind. This is emulation overhead, not a fault in the firmware, and the CPU optimization does not remove it. Running comfortably on the FM-1 hardware does not guarantee real-time speed here.
-- **Not tested:** listening on a real audio device, the packaged Electron application, and anything on physical hardware.
+- **Not tested:** listening on a real audio device, the packaged application on macOS and Linux, and anything on physical hardware.
 
 ## Build from source
 
 Requires [Node.js](https://nodejs.org) 18+.
 
 ```bash
-git clone https://github.com/briksquared/fm1-emulator.git
+git clone https://github.com/HEATWAVS/fm1-emulator.git
 cd fm1-emulator
 npm install
 npm start            # run it
@@ -154,8 +154,8 @@ check for CPU halts or blank LCDs, and write a machine-readable report plus LCD 
 
 ## Credits
 
-A fork of [fm1-emu](https://github.com/joakimeriksson/fm1-emu) by Joakim Eriksson (MIT), which
-provides the Rust→WebAssembly emulation engine. Firmware by the authors listed in
+A fork of [briksquared/fm1-emulator](https://github.com/briksquared/fm1-emulator) (MIT), which is itself a fork of [fm1-emu](https://github.com/joakimeriksson/fm1-emu) by Joakim Eriksson (MIT), which
+provides the Rust→WebAssembly emulation engine. What this fork changes is listed in [CHANGELOG.md](CHANGELOG.md). Firmware by the authors listed in
 [THIRD-PARTY.md](THIRD-PARTY.md).
 
 ## License

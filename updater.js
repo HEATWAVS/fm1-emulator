@@ -1,12 +1,12 @@
 // Checking for a newer version of this desktop app on its GitHub Releases
-// (briksquared/fm1-emulator). Separate from the firmware radar in the page: this is about the
+// (HEATWAVS/fm1-emulator, a fork of briksquared/fm1-emulator). Separate from the firmware radar in the page: this is about the
 // desktop app itself.
 //
 // Nothing is downloaded or installed here. A check asks GitHub for the latest published release
 // and, when it is newer, offers to open its release page.
 const { app, dialog, shell, net, BrowserWindow } = require("electron");
 
-const REPO = "briksquared/fm1-emulator";
+const REPO = "HEATWAVS/fm1-emulator";
 const RELEASES = `https://github.com/${REPO}/releases`;
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const TIMEOUT_MS = 15000;

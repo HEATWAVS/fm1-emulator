@@ -320,8 +320,8 @@
     const L = (href, text) => `<a href="${href}" target="_blank" rel="noopener">${text} ↗</a>`;
     const links = `<div class="grp">
       <h4>This app</h4>
-      ${L("https://github.com/briksquared/fm1-emulator", "Source on GitHub")}
-      ${L("https://github.com/briksquared/fm1-emulator/releases", "Desktop releases")}
+      ${L("https://github.com/HEATWAVS/fm1-emulator", "Source on GitHub")}
+      ${L("https://github.com/HEATWAVS/fm1-emulator/releases", "Desktop releases")}
       <h4>Official</h4>
       ${L("https://www.m-vave.com/download", "M-VAVE downloads (stock FW)")}
       ${L("https://github.com/m-vave/fm1_open", "M-VAVE FM1 Open SDK")}
@@ -337,7 +337,7 @@
     if (nav) nav.appendChild(btn); else document.body.appendChild(btn);
     // App updates → GitHub Releases. Desktop uses the IPC check; browser opens the releases page.
     if (nav && !document.getElementById("app-upd-btn")) {
-      const RELEASES = "https://github.com/briksquared/fm1-emulator/releases";
+      const RELEASES = "https://github.com/HEATWAVS/fm1-emulator/releases";
       const upd = document.createElement("button");
       upd.type = "button"; upd.id = "app-upd-btn"; upd.textContent = "Updates";
       upd.title = window.FM1Desktop?.checkUpdates

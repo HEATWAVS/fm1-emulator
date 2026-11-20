@@ -17,7 +17,7 @@ function setup({ platform = "win32", packaged = true, version = "1.1.0", latest 
     shell: { async openExternal(u) { log.push("open:" + u); } },
     net: { fetch(url, opts) {
       log.push("api");
-      assert.equal(url, "https://api.github.com/repos/briksquared/fm1-emulator/releases/latest");
+      assert.equal(url, "https://api.github.com/repos/HEATWAVS/fm1-emulator/releases/latest");
       if (hang) return new Promise((_, reject) => opts.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))));
       if (fetchError) return Promise.reject(new Error(fetchError));
       return Promise.resolve({ ok: status < 400, status, headers: { get: (k) => headers[k] ?? null },
@@ -41,8 +41,8 @@ Module._load = function (request, ...rest) {
   return realLoad.call(this, request, ...rest);
 };
 const realPlatform = process.platform;
-const PAGE = (tag) => `https://github.com/briksquared/fm1-emulator/releases/tag/${tag}`;
-const RELEASES = "https://github.com/briksquared/fm1-emulator/releases";
+const PAGE = (tag) => `https://github.com/HEATWAVS/fm1-emulator/releases/tag/${tag}`;
+const RELEASES = "https://github.com/HEATWAVS/fm1-emulator/releases";
 
 const tests = {
   async "up to date: says so when asked, stays quiet at startup"() {
