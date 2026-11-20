@@ -130,7 +130,7 @@ assert.match(text("main.js"), /isPeExecutable/, "M-Flasher PE check is shipped")
 assert.match(text("main.js"), /usb-check/, "USB check is logged");
 assert.match(text("main.js"), /fm1:check-updates/, "app update IPC is wired");
 assert.match(text("preload.js"), /checkUpdates/, "app update bridge is exposed");
-assert.match(text("updater.js"), /briksquared\/fm1-emulator/, "public updater points at the public repo");
+assert.match(text("updater.js"), /HEATWAVS\/fm1-emulator/, "public updater points at the public repo");
 assert.match(text("site/emulator/extras.js"), /app-upd-btn/, "desktop Updates control is injected");
 {
   const html = text("site/emulator/index.html");
@@ -139,7 +139,7 @@ assert.match(text("site/emulator/extras.js"), /app-upd-btn/, "desktop Updates co
   assert.ok(nav, "site nav exists");
   assert.doesNotMatch(nav, /href="#firmwares"|href="#guide"|href="#plugin"/, "top nav does not link to hidden sections");
   // Docs lives under More ▾ (site-more), not the empty plugin host nav.
-  assert.match(header, /briksquared\/fm1-emulator#readme/, "Docs link remains in the site header");
+  assert.match(header, /HEATWAVS\/fm1-emulator#readme/, "Docs link remains in the site header");
 }
 assert.match(text("site/emulator/install.js"), /Keep the visible line short/, "install errors stay compact");
 assert.ok(existsSync(resolve(emulator, "catalog-source.js")), "neutral catalog source is shipped");
