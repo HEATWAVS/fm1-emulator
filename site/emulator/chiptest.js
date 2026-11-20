@@ -1,7 +1,7 @@
 // The "Flash chip" box under Now running (Component 8, Stage 2): the three chip buttons (Default, Older, Newer: picking one restarts the firmware on that chip; a hidden #chipmode select is the source of truth), what the chip does, the warning, and the comparison of the two flash-chip profiles (the previous shipped
 // engine and the original flash model run as controls) with its verdict card and its copyable report in an always-visible report area. The pure parts (modes, report text, comparison) are chipmode.js and chipcompare.js; this file is the page wiring and is covered by
 // ci/chip-mode-tests.mjs only as far as a script can (the pure modules, the engine boot path and the saving rules); the buttons themselves were exercised in the browser pane.
-import { MODES, TIMINGS, modeById, modeFromParam, buildReport, pll0Entry, panelNotice, countChipIds, classifyChipIds, withCodeCheck, CODE_CHECK_NOTE } from "./chipmode.js?v=14";
+import { MODES, TIMINGS, modeById, modeFromParam, buildReport, pll0Entry, panelNotice, countChipIds, classifyChipIds, withCodeCheck, CODE_CHECK_NOTE } from "./chipmode.js?v=15";
 import { appFromPackage } from "./fwsc.js";
 
 const COMPARE_SECONDS = 3;
@@ -142,7 +142,7 @@ export function initChipTest(ctx) {
       let codeClass = null;
       try { codeClass = classifyChipIds(countChipIds(appFromPackage(pkg.bytes instanceof Uint8Array ? pkg.bytes : new Uint8Array(pkg.bytes)))); } catch { codeClass = null; }
       const result = await new Promise((resolve, reject) => {
-        const worker = new Worker("chipcompare-worker.js?v=14", { type: "module" });
+        const worker = new Worker("chipcompare-worker.js?v=15", { type: "module" });
         worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || "the comparison worker failed")); };
         worker.onmessage = (e) => {
           const m = e.data;

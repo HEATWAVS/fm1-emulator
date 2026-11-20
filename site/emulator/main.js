@@ -4,8 +4,8 @@
 // in the wasm: a catalog entry's fetched from its author's site, or one opened from this
 // computer (M-VAVE's own: their server does not let other pages fetch it).
 import { fetchPackage } from "./fwsc.js";
-import { ENGINE_FILES } from "./chipmode.js?v=14";
-import { initChipTest } from "./chiptest.js?v=17";
+import { ENGINE_FILES } from "./chipmode.js?v=15";
+import { initChipTest } from "./chiptest.js?v=18";
 import { SaveStore, packageHash, changedSectors, packSectors, exportSave, importSave } from "./persistence.js";
 import "./catalog-source.js";
 import { judgeSecond, recovered } from "./perf-judge.js?v=3";
@@ -1589,7 +1589,7 @@ async function startAudio() {
       await ac.audioWorklet.addModule("stream-worklet.js?v=1");
       const prefill = streamPrefillFrames();
       node = new AudioWorkletNode(ac, "fm1-stream", { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { prefill } });
-      worker = new Worker("engine.js?v=14", { type: "module" });
+      worker = new Worker("engine.js?v=15", { type: "module" });
       worker.onerror = (e) => {
         status.textContent = `the emulator worker failed: ${e.message || "unknown error"}`;
         issue.show("boot", { title: "Emulator stopped", text: status.textContent + ". Press Start to run it again.", level: "error", persist: true });
@@ -1600,7 +1600,7 @@ async function startAudio() {
       node.port.onmessage = (e) => { if (e.data?.type === "stream") stream = e.data; };
       engine = worker;
     } else {
-      await ac.audioWorklet.addModule("worklet.js?v=44");
+      await ac.audioWorklet.addModule("worklet.js?v=45");
       node = new AudioWorkletNode(ac, "fm1", { numberOfInputs: 0, outputChannelCount: [2] });
       engine = node.port;
     }

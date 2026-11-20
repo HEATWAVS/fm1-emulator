@@ -2,7 +2,7 @@
 // worker (chipcompare-worker.js) and the Node tests (ci/chip-mode-tests.mjs) both use it. It touches no storage and no audio device: each configuration is a fresh
 // machine run for a fixed amount of emulated time with NO key presses, on the interpreter (the deterministic reference), USB plugged.
 import { applyPackageResources } from "./package-resources.js?v=1";
-import { applyChipProfile, chipStatus, compareScoped, comparePair, chipVerdict } from "./chipmode.js?v=14";
+import { applyChipProfile, chipStatus, compareScoped, comparePair, chipVerdict } from "./chipmode.js?v=15";
 
 const SAMPLE_RATE = 44100, QUANTUM = 128, FLASH_LEN = 1 << 20, SECTOR = 4096;
 const hashU16 = (a) => { let h = 0x811c9dc5; for (let i = 0; i < a.length; i++) { h ^= a[i]; h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, "0"); };

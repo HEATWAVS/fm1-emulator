@@ -1,5 +1,5 @@
 import { applyPackageResources } from './package-resources.js?v=1';
-import { applyChipProfile, applyCpuOptimization, chipStatus } from './chipmode.js?v=14';
+import { applyChipProfile, applyCpuOptimization, chipStatus } from './chipmode.js?v=15';
 // The emulator in the audio thread: each 128-frame quantum runs the machine until its I2S
 // DMA has produced 128 frames, so the audio device paces the emulation; and also, for an even
 // amount of work per quantum, its share of emulated time while the queue holds less than one

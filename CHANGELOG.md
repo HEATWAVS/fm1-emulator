@@ -6,6 +6,7 @@
 - Compare chips gives a plain verdict (did the firmware start, show a screen, start its audio and write to flash on the older and newer chip models), a code check for the two chips' IDs, and a copyable report about that firmware only. Only Default mode saves; the chip models keep nothing.
 - The Firmware radar moved to the right sidebar, under Install firmware, and the desktop window opens maximized.
 - One engine: the unified engine with a validated CPU optimization (settled-loop early exit of core 1) now runs every firmware; no engine or optimization selection is needed. Frodhes runs about 2.9x faster; the other bundled packages are unchanged in behaviour with the optimization on or off.
+- The Older chip and Newer chip modes now run the same optimized engine as Default, so heavy firmware such as Frodhes no longer overloads there. Checked on all 277 packages under both chip models (typical and maximum timing, JIT on and off): identical results with the optimization on and off. Compare chips still runs on the plain interpreter.
 - The previous engine remains for the front panel and as a reference mode in the Flash chip test panel.
 - The XIP tail after the app area is decrypted (as upstream does), which the official stock firmware needs to start.
 - Known limitations: see README (15 PLL0 packages, 6 audio-in packages, `dx747`/`clatter`, stock firmware sound/UI and speed, real audio device and Electron untested).

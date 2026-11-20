@@ -35,10 +35,10 @@ await test("modes: Default is the normal emulator (the optimized unified engine 
   assert.equal(mode.MODES[0].id, "default");
   assert.equal(mode.DEFAULT_MODE, "default");
   assert.deepEqual(mode.MODES.map((m) => [m.id, m.engine, m.chip, m.test]), [
-    ["default", "optimized", null, false], ["puya", "unified", "puya", true], ["uc25hq80", "unified", "uc25hq80", true], ["original-unified", "unified", null, true], ["previous-engine", "shipped", null, true]]);
+    ["default", "optimized", null, false], ["puya", "optimized", "puya", true], ["uc25hq80", "optimized", "uc25hq80", true], ["original-unified", "unified", null, true], ["previous-engine", "shipped", null, true]]);
   for (const m of mode.MODES) assert.ok(m.label && m.note, m.id);
   assert.ok(mode.MODES.filter((m) => m.test).every((m) => /nothing is saved/i.test(m.note)), "every test mode says nothing is saved");
-  assert.deepEqual(mode.MODES.filter((m) => m.settledLoop).map((m) => m.id), ["default"], "only Default asks for the CPU optimization");
+  assert.deepEqual(mode.MODES.filter((m) => m.settledLoop).map((m) => m.id), ["default", "puya", "uc25hq80"], "Default and the two chip modes ask for the CPU optimization (validated on all 277 packages under both chip models)");
   assert.ok(mode.MODES.every((m) => !m.experimental && !/experimental|adaptive/i.test(m.label + m.note)), "no experimental or adaptive mode is offered");
   assert.ok(!mode.modeById("adaptive-cpu"), "the temporary validation mode is gone");
 });
@@ -413,14 +413,15 @@ await test("comparison text: describeRun separates the audio engine's start from
 });
 
 // ---- the CPU optimization (settled-loop early exit of core 1) in the normal execution path: Default asks for it, nothing else does, and nothing about it is selectable or stored
-await test("Default and the CPU optimization: Default is the optimized unified engine with the optimization on, saves, and is the only mode that asks for it; the chip modes and the references run without it", () => {
+await test("Default and the CPU optimization: Default is the optimized unified engine with the optimization on and saves; the two chip modes run the same engine with the same optimization (and save nothing); the references run without it", () => {
   const m = mode.modeById("default");
   assert.deepEqual([m.engine, m.chip, m.test, m.settledLoop], ["optimized", null, false, true]);
   assert.equal(m.experimental, undefined);
-  assert.deepEqual(mode.MODES.filter((x) => x.settledLoop).map((x) => x.id), ["default"]);
+  assert.deepEqual(mode.MODES.filter((x) => x.settledLoop).map((x) => x.id), ["default", "puya", "uc25hq80"]);
   assert.equal(mode.MODES.find((x) => x.id === "original-unified").engine, "unified", "the baseline runs the unified engine as it is");
   assert.equal(mode.MODES.find((x) => x.id === "previous-engine").engine, "shipped");
   assert.notEqual(m.engine, "unified", "its own engine key: the worker's compiled-module cache is keyed by it, so it can never return the unified module (or the other way round)");
+  assert.deepEqual(mode.MODES.filter((x) => x.chip).map((x) => x.engine), ["optimized", "optimized"], "the chip modes run the optimized engine");
   assert.equal(new Set(Object.keys(mode.ENGINE_FILES)).size, 3);
 });
 
@@ -467,12 +468,12 @@ await test("Default, the engine selection and persistence (source-shape guards):
 await test("cache-busting: every importer of chipmode.js, chipcompare.js, chiptest.js, worklet.js and engine.js names the version this change set, so a returning browser cannot mix old and new modules", () => {
   const files = ["main.js", "chiptest.js", "chipcompare.js", "chipcompare-worker.js", "worklet.js", "engine.js", "index.html"];
   const versions = (name) => files.flatMap((f) => [...read(f).matchAll(new RegExp(`(?<![A-Za-z0-9_-])${name.replace(".", "\\.")}\\?v=(\\d+)`, "g"))].map((m) => `${f}:${m[1]}`));
-  for (const [name, v] of [["chipmode.js", "14"], ["chipcompare.js", "14"], ["chiptest.js", "17"], ["chipcompare-worker.js", "14"], ["worklet.js", "44"], ["engine.js", "14"]]) {
+  for (const [name, v] of [["chipmode.js", "15"], ["chipcompare.js", "15"], ["chiptest.js", "18"], ["chipcompare-worker.js", "15"], ["worklet.js", "45"], ["engine.js", "15"]]) {
     const all = versions(name);
     assert.ok(all.length > 0, name);
     assert.ok(all.every((e) => e.endsWith(`:${v}`)), `${name} ${all.join(" ")}`);
   }
-  assert.match(read("index.html"), /main\.js\?v=132/);
+  assert.match(read("index.html"), /main\.js\?v=133/);
 });
 
 // ---- the real engines through the code the page runs (--full)
