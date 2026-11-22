@@ -16,7 +16,12 @@ choose a firmware, press **Start**, and play with your keyboard, mouse, or a MID
 
 ## What's new in 1.1.4
 
-One engine with a validated CPU optimization, a Flash chip compatibility box with Compare chips, and a maximized desktop window. See the [release notes](docs/RELEASE-NOTES-1.1.4.md) and the known limitations below.
+- **Flash chip testing.** Run a firmware against a model of the older chip (Puya P25Q80H) or the newer chip (UC25HQ80) before you flash it. The chip modes keep nothing; only Default saves your patches.
+- **Compare chips.** Runs the loaded firmware on both chip models and gives a plain verdict on whether it started and wrote to flash on each. It also checks the code for the chips' IDs and produces a report you can copy.
+- **CPU optimization.** A validated speed-up that reduces overload on some firmware. It helps only firmware whose second core waits in a loop (about a quarter of the bundled packages) and is not a fix for every firmware.
+- **Desktop window** now opens maximized, and the Firmware radar moved under Install firmware.
+
+This does not prove a firmware works on a real FM-1. See the [release notes](docs/RELEASE-NOTES-1.1.4.md) and the known limitations below.
 
 <p align="center">
   <img src="docs/screenshots/14-flash-chip-compare.png" alt="Flash chip box: Default, Older chip and Newer chip modes, and a Compare chips verdict" width="300">
