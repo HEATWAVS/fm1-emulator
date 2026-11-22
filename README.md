@@ -21,7 +21,7 @@ choose a firmware, press **Start**, and play with your keyboard, mouse, or a MID
 - **CPU optimization.** A validated speed-up that reduces overload on some firmware. It helps only firmware whose second core waits in a loop (about a quarter of the bundled packages) and is not a fix for every firmware.
 - **Desktop window** now opens maximized, and the Firmware radar moved under Install firmware.
 
-This does not prove a firmware works on a real FM-1. See the [release notes](docs/RELEASE-NOTES-1.1.4.md) and the known limitations below.
+The chip tests cannot prove that a firmware works on a real FM-1; only a test on a real unit can. See the [release notes](docs/RELEASE-NOTES-1.1.4.md) and the known limitations below.
 
 <p align="center">
   <img src="docs/screenshots/14-flash-chip-compare.png" alt="Flash chip box: Default, Older chip and Newer chip modes, and a Compare chips verdict" width="300">
